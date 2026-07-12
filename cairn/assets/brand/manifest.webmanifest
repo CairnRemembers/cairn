@@ -1,0 +1,13 @@
+{
+  "name": "Cairn",
+  "short_name": "Cairn",
+  "display": "standalone",
+  "start_url": "/garden",
+  "launch_handler": { "client_mode": "navigate-existing" },
+  "theme_color": "#16140E",
+  "background_color": "#16140E",
+  "icons": [
+    { "src": "/assets/brand/app-chip-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/assets/brand/app-chip-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

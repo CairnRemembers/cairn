@@ -1,0 +1,25 @@
+Cairn
+Copyright 2026 James Wescott Maitland IV
+
+Licensed under the Business Source License 1.1 (the "License").
+See the LICENSE file in this repository for the full terms and the Additional
+Use Grant. Free for personal, individual, and non-commercial local use;
+commercial or business use requires a commercial license. Each version converts
+to the MIT License on the Change Date stated in the LICENSE. For commercial
+licensing, custom/tailored versions, or paid installation, contact:
+    licensing@cairnremembers.com.
+
+Patent pending. Portions of this software are covered by a United States
+provisional patent application filed 2026-07-07.
+
+"Cairn Remembers" is a trademark of James Wescott Maitland IV.
+
+-----------------------------------------------------------------------------
+
+Third-party components bundled with Cairn:
+
+- D3.js v7 (cairn/assets/d3.v7.min.js) - Copyright 2010-2023 Mike Bostock,
+  licensed under the ISC License: https://github.com/d3/d3/blob/main/LICENSE
+- Anton and VT323 fonts (cairn/assets/fonts/*.woff2) - licensed under the
+  SIL Open Font License 1.1; full texts ship alongside the fonts in
+  cairn/assets/fonts/OFL-Anton.txt and cairn/assets/fonts/OFL-VT323.txt.

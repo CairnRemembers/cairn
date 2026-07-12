@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cairn-remembers"
+version = "0.2.1"
+description = "Local-first, sovereign memory for AI agents — your memory, across any model."
+readme = "README.md"
+license = "BUSL-1.1"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.11"
+authors = [{ name = "James Wescott Maitland IV", email = "licensing@cairnremembers.com" }]
+keywords = ["memory", "ai-agents", "mcp", "local-first", "llm", "knowledge", "sqlite"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# numpy is used by core retrieval/edges/atlas (index.py, edges.py, vault.py,
+# dashboard.py) — not just embeddings — so it belongs in the base install.
+dependencies = [
+    # basic array ops only (dot / argsort / etc.) — compatible across 1.24-2.x
+    # (suite is green on 2.4.x); the <3 cap guards against a future major so an
+    # install never silently pulls a breaking release we haven't tested.
+    "numpy>=1.24,<3",
+]
+
+[project.urls]
+Homepage = "https://cairnremembers.com"
+Repository = "https://github.com/CairnRemembers/cairn"
+Issues = "https://github.com/CairnRemembers/cairn/issues"
+
+[project.optional-dependencies]
+# the semantic embedder (first run downloads ~80 MB all-MiniLM-L6-v2 from HF).
+# The SentenceTransformer.encode() API is stable across majors; <6 caps the next.
+embeddings = [
+    "sentence-transformers>=2.2.0,<6",
+]
+# the local dashboard + garden (FastAPI app served by uvicorn on :7331). Both are
+# pre-1.0; basic route/response usage is stable, and <1.0 caps a future rewrite.
+dashboard = [
+    "fastapi>=0.110,<1.0",
+    "uvicorn>=0.23,<1.0",
+]
+# everything
+all = [
+    "sentence-transformers>=2.2.0,<6",
+    "fastapi>=0.110,<1.0",
+    "uvicorn>=0.23,<1.0",
+]
+
+[project.scripts]
+cairn = "cairn.__main__:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cairn*"]
+exclude = ["tests*"]
