@@ -4,7 +4,7 @@
 
 **Local-first episodic memory for AI agents — and for you.**
 
-**New here? → [`QUICKSTART.md`](QUICKSTART.md)** gets you running in five steps.
+**👤 New here?** [**Setup**](#setup) gets you running in ~5 minutes — the human steps *or* the ⚡ "let your AI do it" lane. Full reference: [`QUICKSTART.md`](QUICKSTART.md).
 
 A cairn is a stack of stones that marks a path. This one marks the path of your
 thinking: every decision, dead end, and reason gets captured as a node, embedded,
@@ -16,56 +16,88 @@ your machine.
 - **Model-agnostic** — works with any agent that can run a shell command or speak MCP.
 - **No heavy deps** — stdlib + numpy, plus an optional embedder and dashboard.
 
-## Install
+## Setup
 
-Requires Python 3.11+. On Windows, prefix commands with `python -X utf8` so the
-console can print Cairn's box-drawing + emoji output. Tested on Windows and
-Linux (including WSL); macOS should work the same way — macOS reports welcome.
+Two ways in — **both tested** (a human set it up by hand; the agent lane works too).
 
-**One command** — from the `cairn` folder:
+### ⚡ Fastest — let your AI install it
 
-**Windows** (PowerShell) — if it's blocked with *"running scripts is disabled,"* use `powershell -ExecutionPolicy Bypass -File .\install.ps1`:
-```powershell
-.\install.ps1
+In Claude Code / Codex / Cursor, say:
+
+> *Install and set up Cairn for me from https://github.com/CairnRemembers/cairn.*
+
+Most coding agents handle the whole flow — clone, install, run `doctor`, and ask you
+the one consent question before turning capture on.
+
+### 🔧 Human setup — the whole thing is 4 commands
+
+Run these top to bottom (let each finish first). **This is everything you type:**
+
 ```
-**macOS / Linux:**
-```bash
-./install.sh
-```
-
-It installs the package + deps and runs `cairn doctor` to confirm everything's
-wired. By hand instead:
-
-```bash
-cd <path-to>/cairn
-pip install -e ".[all]"        # embedder + dashboard
-cairn doctor                    # verify; the vault auto-creates on first run
+git clone https://github.com/CairnRemembers/cairn && cd cairn   # 1 · get the code
+.\install.ps1                                                    # 2 · install   (macOS/Linux: ./install.sh)
+python -X utf8 -m cairn setup                                    # 3 · connect   (answer y at each prompt)
+python -X utf8 -m cairn doctor                                   # 4 · verify    (the "capture" line now shows a check)
 ```
 
-Lighter installs: `".[embeddings]"` (no dashboard) · `".[dashboard]"` (no embedder).
-The first `embed` downloads the ~80 MB `all-MiniLM-L6-v2` model from HuggingFace
-once (semantic `fetch`/`query` use it after that; before any nodes are embedded
-they fall back to keyword search) — the only time Cairn itself reaches out.
+Then **open a new AI chat** — it greets you with Cairn's orient banner. **That's done.**
 
-## First run
+> The `-X utf8` keeps Cairn's box/emoji output from garbling on Windows — it's harmless
+> on macOS/Linux, so the same commands work everywhere.
 
-```bash
-python -m cairn orient          # inherited context (empty on a fresh vault — fine)
-python -m cairn note --kind=decision "chose X over Y because Z"
-python -m cairn embed           # build the semantic index (downloads the model once)
-python -m cairn fetch "what did we decide about X"
-python -m cairn dashboard       # the brain at http://localhost:7331
+> ℹ️ Those 4 lines are all you *run*. The steps below just explain each one and what to
+> do **if it snags** — skip them unless something breaks.
+
+**Where you are:** ① Get code → ② Install → ③ Connect → ④ Prove it
+
+#### Step 1 of 4 · Get the code
 ```
+git clone https://github.com/CairnRemembers/cairn
+cd cairn
+```
+<details><summary>No git, or you downloaded the ZIP</summary>
 
-## What to back up
+Extract it and `cd` in. On macOS/Linux the run bit can be stripped — use `bash install.sh` in step 2.
+</details>
 
-Only one folder matters: your **vault** at `~/.cairn/` (that's `cairn.db` — your
-actual memories). **Back that one up.** Everything else is replaceable — the code
-lives on GitHub, and reinstalling never touches your vault.
+#### Step 2 of 4 · Install
+Needs **Python 3.11+**. `.\install.ps1` (Windows) or `./install.sh` (macOS/Linux) — it
+finds Python, installs everything (first run pulls PyTorch, a few minutes), and runs `doctor`.
 
-## Connect it to your AI assistant
+<details><summary>Windows: "running scripts is disabled"</summary>
 
-**Claude Desktop / Cursor / any MCP client** — add to your client's MCP config:
+`powershell -ExecutionPolicy Bypass -File .\install.ps1`
+</details>
+
+<details><summary>Install by hand / lighter builds</summary>
+
+`python -m pip install -e ".[all]"` — package + embedder + dashboard.
+Lighter: `".[embeddings]"` (no dashboard) · `".[dashboard]"` (no embedder).
+Use `python -m pip` (not bare `pip`) so it lands in the same Python that runs Cairn, and
+keep the quotes on `".[all]"` — PowerShell treats unquoted brackets as wildcards.
+</details>
+
+<details><summary>Linux / WSL: "externally-managed-environment"</summary>
+
+`python3 -m venv .venv && source .venv/bin/activate`, then `./install.sh`.
+</details>
+
+#### Step 3 of 4 · Connect your AI — *the step people skip; it's what turns capture on*
+```
+python -X utf8 -m cairn setup
+```
+It detects the AI harnesses you already have (Claude Code, OpenAI Codex) and asks about
+each — **type `y`** at the prompt (the default is No, so just pressing Enter leaves it
+off). That wires ambient capture: orient at the start, record as you work, compile +
+embed at the end. Then **open a new chat**.
+
+> No Claude Code or Codex installed yet? `setup` says "no supported AI harnesses detected"
+> — install one first, then re-run.
+
+<details><summary>Give your AI the vault as live tools (Claude Desktop / Cursor / Codex — MCP)</summary>
+
+Eight tools (`cairn_orient`, `cairn_fetch`, `cairn_search`, `cairn_recent`, `cairn_read`,
+`cairn_logs`, `cairn_wander`, `cairn_note`). Add an MCP server:
 
 ```json
 { "mcpServers": { "cairn": {
@@ -73,74 +105,34 @@ lives on GitHub, and reinstalling never touches your vault.
     "args": ["-X", "utf8", "-m", "cairn", "mcp"] } } }
 ```
 
-You'll get all eight as native tools: `cairn_orient`, `cairn_fetch`, `cairn_search`,
-`cairn_recent`, `cairn_read`, `cairn_logs`, `cairn_wander`, `cairn_note`.
+OpenAI Codex + the full walkthrough → [`QUICKSTART.md` §6](QUICKSTART.md#6--use-cairn-from-codex).
+</details>
 
-**Claude Code CLI** — `cairn connect` opts a project into ambient memory: it
-writes hooks into `.claude/settings.json` so every session **auto-orients** at
-the start and **captures as it works** — *tool calls and the conversation itself*
-(decisions, preferences) — then **compiles + embeds** at the end. Nothing leaves
-your machine; it all lands in the local vault.
+<details><summary>Privacy</summary>
 
-## Use Cairn from Codex
+Opt-in, off by default, reversible: `cairn disconnect` turns it back off, `cairn setup`
+reviews everything. Nothing leaves your machine.
+</details>
 
-**OpenAI Codex** (desktop app + CLI) reaches the vault the same way any MCP client
-does, plus two Codex-specific extras. Full walkthrough in
-[`QUICKSTART.md`](QUICKSTART.md#6--use-cairn-from-codex); the shape:
+#### Step 4 of 4 · Prove it works
+`python -X utf8 -m cairn doctor` → the **capture** line now shows a check. Open a **new**
+AI chat — it starts with the orient banner. Then leave a first signal:
 
-**Tools via MCP** — add to `~/.codex/config.toml`, then restart Codex:
+<details><summary>first signals to try</summary>
 
-```toml
-[mcp_servers.cairn]
-command = '<full-path-to-python>'
-args = ["-X", "utf8", "-m", "cairn", "mcp"]
-startup_timeout_sec = 30
-tool_timeout_sec = 120
-default_tools_approval_mode = "approve"
 ```
-
-You get all eight tools: `cairn_orient`, `cairn_fetch`, `cairn_search`, `cairn_recent`,
-`cairn_read`, `cairn_logs`, `cairn_wander`, `cairn_note`. `-X utf8` matters on Windows (the server prints Unicode).
-`approve` mode lets Codex run the tools without a per-call popup that would otherwise
-auto-cancel in a headless run. The `<python>` you name must be able to `import cairn`.
-
-**Optional agentic capture** — one command wraps Codex's `notify` so notify-fired
-turns (agentic/computer-use turns plus filtered backstage helper events) land in the
-vault as `conversation_turn` nodes (tagged `codex`, `conversation`), no per-turn effort.
-Codex does **not** fire `notify` for plain conversational chat, so those turns aren't
-captured this way — full plain-chat capture is a separate command,
-`cairn import codex-sessions` (below). `cairn_note` stays the on-demand path for
-salience notes:
-
-```bash
-python -X utf8 -m cairn codex-hook install     # status · uninstall to reverse
+python -X utf8 -m cairn note --kind=decision "chose X over Y because Z"
+python -X utf8 -m cairn embed    # build the semantic index (downloads the model once)
+python -X utf8 -m cairn fetch "what did I decide about X"
+python -X utf8 -m cairn dashboard  # the map at http://127.0.0.1:7331
 ```
+</details>
 
-It **wraps** any existing notify — OpenAI's own plumbing keeps running, replayed
-after capture — backs up `config.toml` first, and is fail-safe: capture can never
-break or delay Codex. `uninstall` restores the original notify exactly. Off by default.
+## What to back up
 
-**Full plain-chat capture** — `cairn import codex-sessions` reads the transcripts
-Codex writes to `~/.codex/sessions` (the plain conversation the notify hook can't see)
-and files them as `conversation_turn` nodes, deduped against the hook so the two never
-double-capture. **Dry-run by default** — it prints scope/counts and changes nothing;
-`--apply` writes (a reversible manifest is saved first). **Forward-only by default:** a
-watermark set on the first `--apply` separates history-on-disk from new-going-forward,
-so you're never silently backfilled — `--include-before=YYYY-MM-DD` opts into a bounded
-history import. Attribution is single-account via `--account` (the store has no
-per-record account id — a documented limit).
-
-```bash
-python -X utf8 -m cairn import codex-sessions            # dry-run preview
-python -X utf8 -m cairn import codex-sessions --apply    # write forward turns
-```
-
-So the three Codex→vault paths stay distinct: **`cairn_note`** = salience notes ·
-**notify** = agentic/notify-fired events · **`import codex-sessions`** = full plain chat.
-
-**The `AGENTS.md` protocol** — a global `~/.codex/AGENTS.md` tells Codex to orient at
-session start, fetch before answering personal/history questions, and write salience
-notes tagged `codex`. QUICKSTART has the full copy-paste template.
+Only one folder matters: your **vault** at `~/.cairn/` (that's `cairn.db` — your
+actual memories). **Back that one up.** Everything else is replaceable — the code
+lives on GitHub, and reinstalling never touches your vault.
 
 ## If you are an AI agent installing Cairn for a human — the consent walk
 

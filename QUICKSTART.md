@@ -1,5 +1,8 @@
 # Cairn — Field Manual
 
+> **The complete human manual.** New here? The [README](README.md) gets you running in
+> ~5 minutes; this is the deep reference for when you want every option and fix.
+
 > **Build knowledge. Leave signals.**
 > Tools for modern explorers. Local-first episodic memory for you and your AI.
 

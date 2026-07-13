@@ -5,6 +5,23 @@ every model that works here. You are one worker in a multi-model system: other
 models have written to this vault before you, and others will after. Read this
 once, then follow it.
 
+> **Human reading this?** You want [README.md](README.md) / [QUICKSTART.md](QUICKSTART.md) —
+> this file is the *agent's* operating protocol, not a human install guide.
+
+## Step 0 — install Cairn if it isn't already
+
+If `python -m cairn doctor` fails with "No module named cairn", install it first:
+
+```
+git clone https://github.com/CairnRemembers/cairn
+cd cairn
+# Windows:      .\install.ps1     (blocked? powershell -ExecutionPolicy Bypass -File .\install.ps1)
+# macOS/Linux:  ./install.sh
+```
+
+The installer finds Python 3.11+, installs deps, and runs `doctor` — then continue below.
+If `doctor` already resolves, you're installed; skip to Step 1.
+
 ## Step 1 — ask the system what exists. Don't guess.
 
 ```
