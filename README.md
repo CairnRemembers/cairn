@@ -18,115 +18,64 @@ your machine.
 
 ## Setup
 
-Two ways in — **both tested** (a human set it up by hand; the agent lane works too).
+Two ways in — **both tested** (a real person set it up by hand; the agent lane works too).
 
-### ⚡ Fastest — let your AI install it
+### 🤖 Fastest — let your AI do it
 
-In Claude Code / Codex / Cursor, say:
+Open Claude Code, Codex, or Cursor and paste:
 
-> *Install and set up Cairn for me from https://github.com/CairnRemembers/cairn.*
+> Install and set up Cairn for me from https://github.com/CairnRemembers/cairn
 
-Most coding agents handle the whole flow — clone, install, run `doctor`, and ask you
-the one consent question before turning capture on.
+It clones, installs, and asks you one yes/no question. That's the whole thing.
 
-### 🔧 Human setup — the whole thing is 4 commands
+### 🧑 Or do it yourself — 5 steps
 
-Run these top to bottom (let each finish first). **This is everything you type:**
+Run each block, then move to the next. On Windows, type `python -X utf8 …` (as shown) so Cairn's output prints cleanly.
 
-```
-git clone https://github.com/CairnRemembers/cairn && cd cairn   # 1 · get the code
-.\install.ps1                                                    # 2 · install   (macOS/Linux: ./install.sh)
-python -X utf8 -m cairn setup                                    # 3 · connect   (answer y at each prompt)
-python -X utf8 -m cairn doctor                                   # 4 · verify    (the "capture" line now shows a check)
-```
+**Step 1 of 5 — Get the code**
 
-Then **open a new AI chat** — it greets you with Cairn's orient banner. **That's done.**
-
-> The `-X utf8` keeps Cairn's box/emoji output from garbling on Windows — it's harmless
-> on macOS/Linux, so the same commands work everywhere.
-
-> ℹ️ Those 4 lines are all you *run*. The steps below just explain each one and what to
-> do **if it snags** — skip them unless something breaks.
-
-**Where you are:** ① Get code → ② Install → ③ Connect → ④ Prove it
-
-#### Step 1 of 4 · Get the code
 ```
 git clone https://github.com/CairnRemembers/cairn
 cd cairn
 ```
-<details><summary>No git, or you downloaded the ZIP</summary>
 
-Extract it and `cd` in. On macOS/Linux the run bit can be stripped — use `bash install.sh` in step 2.
-</details>
+**Step 2 of 5 — Install** *(needs Python 3.11+)*
 
-#### Step 2 of 4 · Install
-Needs **Python 3.11+**. `.\install.ps1` (Windows) or `./install.sh` (macOS/Linux) — it
-finds Python, installs everything (first run pulls PyTorch, a few minutes), and runs `doctor`.
+```
+.\install.ps1
+```
 
-<details><summary>Windows: "running scripts is disabled"</summary>
+*(macOS / Linux: `./install.sh`)* — the installer finds Python, installs everything (first run downloads PyTorch, a few minutes), and checks itself.
 
-`powershell -ExecutionPolicy Bypass -File .\install.ps1`
-</details>
+**Step 3 of 5 — Turn on memory**
 
-<details><summary>Install by hand / lighter builds</summary>
-
-`python -m pip install -e ".[all]"` — package + embedder + dashboard.
-Lighter: `".[embeddings]"` (no dashboard) · `".[dashboard]"` (no embedder).
-Use `python -m pip` (not bare `pip`) so it lands in the same Python that runs Cairn, and
-keep the quotes on `".[all]"` — PowerShell treats unquoted brackets as wildcards.
-</details>
-
-<details><summary>Linux / WSL: "externally-managed-environment"</summary>
-
-`python3 -m venv .venv && source .venv/bin/activate`, then `./install.sh`.
-</details>
-
-#### Step 3 of 4 · Connect your AI — *the step people skip; it's what turns capture on*
 ```
 python -X utf8 -m cairn setup
 ```
-It detects the AI harnesses you already have (Claude Code, OpenAI Codex) and asks about
-each — **type `y`** at the prompt (the default is No, so just pressing Enter leaves it
-off). That wires ambient capture: orient at the start, record as you work, compile +
-embed at the end. Then **open a new chat**.
 
-> No Claude Code or Codex installed yet? `setup` says "no supported AI harnesses detected"
-> — install one first, then re-run.
+Type **`y`** when it asks about Claude / Codex. This is the step that makes Cairn actually remember — capture is off until you do it.
 
-<details><summary>Give your AI the vault as live tools (Claude Desktop / Cursor / Codex — MCP)</summary>
+**Step 4 of 5 — Open a new AI chat**
 
-Eight tools (`cairn_orient`, `cairn_fetch`, `cairn_search`, `cairn_recent`, `cairn_read`,
-`cairn_logs`, `cairn_wander`, `cairn_note`). Add an MCP server:
+Start a fresh chat in your AI. Memory switches on for *new* chats — not the one you're already in.
 
-```json
-{ "mcpServers": { "cairn": {
-    "command": "<full-path-to-python>",
-    "args": ["-X", "utf8", "-m", "cairn", "mcp"] } } }
-```
-
-OpenAI Codex + the full walkthrough → [`QUICKSTART.md` §6](QUICKSTART.md#6--use-cairn-from-codex).
-</details>
-
-<details><summary>Privacy</summary>
-
-Opt-in, off by default, reversible: `cairn disconnect` turns it back off, `cairn setup`
-reviews everything. Nothing leaves your machine.
-</details>
-
-#### Step 4 of 4 · Prove it works
-`python -X utf8 -m cairn doctor` → the **capture** line now shows a check. Open a **new**
-AI chat — it starts with the orient banner. Then leave a first signal:
-
-<details><summary>first signals to try</summary>
+**Step 5 of 5 — Check it worked**
 
 ```
-python -X utf8 -m cairn note --kind=decision "chose X over Y because Z"
-python -X utf8 -m cairn embed    # build the semantic index (downloads the model once)
-python -X utf8 -m cairn fetch "what did I decide about X"
-python -X utf8 -m cairn dashboard  # the map at http://127.0.0.1:7331
+python -X utf8 -m cairn doctor
 ```
-</details>
+
+The **`capture`** line shows a ✓. Done — from now on, new chats remember. See your memory map any time with `python -X utf8 -m cairn dashboard` (opens http://127.0.0.1:7331).
+
+---
+
+**If something snags**
+
+- **First move, always:** `python -X utf8 -m cairn doctor` — it names exactly what's missing.
+- **Windows won't run `.\install.ps1`?** Use `powershell -ExecutionPolicy Bypass -File .\install.ps1`.
+- **"No supported AI harnesses detected"?** Install Claude Code or Codex first, then re-run Step 3.
+- **"requires fastapi and uvicorn" even after installing?** You have two Pythons — reinstall with the same one: `python -m pip install -e ".[all]"` (keep the quotes exactly).
+- **Want your AI to *search* the vault as tools** (Claude Desktop / Cursor / Codex)? See [QUICKSTART §6](QUICKSTART.md#6--use-cairn-from-codex).
 
 ## What to back up
 
