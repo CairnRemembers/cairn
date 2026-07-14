@@ -36,8 +36,8 @@ Write-Host ""
 # 4. next steps
 Write-Host ""
 Write-Host "  next steps:" -ForegroundColor DarkYellow
-Write-Host "    python -X utf8 -m cairn dashboard    # the brain at http://localhost:7331"
-Write-Host "    python -X utf8 -m cairn connect       # ambient capture (optional, off by default)"
+Write-Host "    python -X utf8 -m cairn setup         # turn on memory (recommended) - handles Claude + Codex"
+Write-Host "    python -X utf8 -m cairn dashboard     # the brain at http://localhost:7331"
 Write-Host "    python -X utf8 -m cairn note 'first signal'"
 Write-Host ""
 Write-Host "  build knowledge. leave signals." -ForegroundColor DarkGray
