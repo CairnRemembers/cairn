@@ -2,7 +2,7 @@
 
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
-![Version 0.3.0](https://img.shields.io/badge/version-0.3.0-green)
+![Version 0.3.1](https://img.shields.io/badge/version-0.3.1-green)
 ![Patent pending](https://img.shields.io/badge/patent-pending-orange)
 ![Local-first](https://img.shields.io/badge/local--first-no%20cloud-brightgreen)
 
