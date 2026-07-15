@@ -109,8 +109,8 @@ claude mcp add --scope user cairn -- <full-path-to-python> -X utf8 -m cairn mcp
 
 ### OpenAI Codex — three pieces, each does a different job
 1. **Capture** 🖥️ — `python -X utf8 -m cairn setup` → `y` for Codex (= `codex-hook install`).
-   Captures **agent-turn events** as they happen. Plain conversation is *not* captured
-   this way — pull it in whenever you want with 🖥️ `python -X utf8 -m cairn import codex-sessions --apply`.
+   Captures turns live as Codex fires `notify` (deduped by turn id). For a comprehensive
+   sweep of everything on disk, run 🖥️ `python -X utf8 -m cairn import codex-sessions --apply` anytime.
 2. **Tools** 📄 — add to `~/.codex/config.toml`, then fully restart Codex
    ([full §6 walk-through](QUICKSTART.md#6--use-cairn-from-codex)):
 ```toml
@@ -128,8 +128,9 @@ default_tools_approval_mode = "approve"
 ✅ **Done when:** 🖥️ `python -X utf8 -m cairn codex-hook status` prints **INSTALLED**,
 and 💬 a Codex chat answers *"call cairn_orient"* with a digest (with piece 3, its first
 reply starts `[cairn: oriented — N]`).
-⚠️ *Honest note:* `cairn doctor` verifies neither Codex wire yet — it may mention Codex
-sessions it finds, but it is not a Codex-completion certificate. The checks above are the real proof.
+⚠️ *Honest note:* `cairn doctor` structurally detects Codex MCP registration (the
+`[mcp_servers.cairn]` block), but it does not prove the server launches or that the notify
+hook captures — the checks above are the real proof of those.
 
 ### Claude Desktop / Cursor — one paste
 📄 Add to `claude_desktop_config.json` (or Cursor's MCP settings), then restart the app:

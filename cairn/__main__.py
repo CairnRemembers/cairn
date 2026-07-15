@@ -1133,6 +1133,11 @@ def cmd_import_local_agent_sessions(args: list[str]) -> None:
     print(f"  store:   {r['root']}")
     print(f"  account: {acct}")
     print(f"  scanned: {r['files_scanned']} transcript file(s)")
+    if r.get("walk_errors"):
+        # surfaced BEFORE the zero-files return: an entirely inaccessible tree
+        # yields files_scanned=0 AND walk_errors>0, and must not read as "none found".
+        print(f"  ⚠ {r['walk_errors']} folder(s) could not be listed (permissions/path) — "
+              f"some transcripts may be missing; check access and re-run.")
     if not r["files_scanned"]:
         print("  (no transcripts found — is Claude Desktop / Cowork installed, or is --root correct?)")
         return
@@ -1152,9 +1157,6 @@ def cmd_import_local_agent_sessions(args: list[str]) -> None:
     if r.get("truncated_files"):
         print(f"  ⚠ {r['truncated_files']} file(s) hit a read error mid-file — re-run to "
               f"finish (dedup makes it safe).")
-    if r.get("walk_errors"):
-        print(f"  ⚠ {r['walk_errors']} folder(s) could not be listed (permissions/path) — "
-              f"some transcripts may be missing; check access and re-run.")
     if r["preview"]:
         p = r["preview"]
         print(f"  preview turn {p['turn_id']}:  user \"{p['user']}\"  ->  agent \"{p['agent']}\"")
@@ -1180,12 +1182,13 @@ def cmd_import_codex_sessions(args: list[str]) -> None:
     """
     Import PLAIN Codex/GPT chat from the on-disk session store into the vault.
 
-    The notify hook captures only agentic / notify-fired turns — Codex never fires
-    notify for plain conversational chat. That chat IS on disk, in
+    The notify hook captures turns live as Codex fires notify (deduped by turn id);
+    what it fires for is version-dependent, and it only covers turns after it was
+    installed. Either way the full history is on disk, in
     ~/.codex/sessions/**/rollout-*.jsonl. This reads it (READ-ONLY) and files it as
     codex-<thread> conversation_turn nodes, deduped against the hook so the two
-    never double-capture. This is the third capture path, distinct on purpose:
-      cairn_note = salience · notify = agentic events · this = full plain chat.
+    never double-capture. The comprehensive backfill path, distinct on purpose:
+      cairn_note = salience · notify = live capture · this = comprehensive backfill.
 
     DRY-RUN by default — prints scope/counts, changes nothing. --apply writes (a
     reversible manifest is saved to ~/.cairn/ first). FORWARD-ONLY by default: a
@@ -2149,7 +2152,7 @@ def cmd_doctor(args: list[str]) -> None:
     except Exception:
         line(OPT, "capture", "could not check capture settings")
 
-    # codex capture surface — the honest disclosure: notify ≠ full plain chat.
+    # codex capture surface — notify is live capture; import codex-sessions backfills.
     # Only shown when a Codex store exists (Codex is in use on this machine), so
     # non-Codex users see nothing. This is the not-a-me-fix: doctor tells the
     # truth about the gap instead of any doc claiming "every turn is captured".
@@ -2167,12 +2170,12 @@ def cmd_doctor(args: list[str]) -> None:
                 pass
             if st_wm:
                 line(OK, "codex capture",
-                     f"notify = agentic turns; plain chat via import codex-sessions "
-                     f"(forward capture ON; {n_roll} threads on disk)")
+                     f"notify = live per-turn capture; comprehensive backfill via import "
+                     f"codex-sessions (forward capture ON; {n_roll} threads on disk)")
             else:
                 line(OPT, "codex capture",
-                     f"notify hook = agentic/notify-fired turns ONLY; plain Codex chat "
-                     f"({n_roll} threads) is NOT yet imported",
+                     f"notify hook = live capture as Codex fires it; {n_roll} on-disk "
+                     f"thread(s) not yet backfilled",
                      "cairn import codex-sessions   (dry-run preview; then --apply)")
     except Exception:
         pass

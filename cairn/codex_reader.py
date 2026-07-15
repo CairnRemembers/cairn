@@ -2,19 +2,20 @@
 cairn/codex_reader.py — batch import of PLAIN Codex/GPT chat from the on-disk
 session store (~/.codex/sessions/**/rollout-*.jsonl) into the vault.
 
-WHY THIS EXISTS. Codex's notify hook (codex_hook.py) only fires on agentic /
-computer-use turns and backstage helper calls — it NEVER fires for plain
-conversational chat. That chat isn't lost, though: Codex writes every turn to a
-newline-delimited JSON "rollout" file on disk. This reader is the complete-capture
-path the notify hook structurally cannot be — it reads files Codex already writes,
-needs zero cooperation from Codex, and unifies with the hook's nodes under the
-SAME codex-<thread_id> session + turn:<turn_id> dedup so the two never
+WHY THIS EXISTS. Codex's notify hook (codex_hook.py) captures turns live as Codex
+fires `notify` — WHAT it fires for is version-dependent (current builds fire per turn,
+plain conversation included; older builds fired only on agentic / computer-use turns),
+and it only covers turns AFTER it was installed. Either way Codex writes every turn to
+a newline-delimited JSON "rollout" file on disk, so the full history is never lost.
+This reader is the comprehensive backfill the hook is not — it reads files Codex
+already writes, needs zero cooperation from Codex, and unifies with the hook's nodes
+under the SAME codex-<thread_id> session + turn:<turn_id> dedup so the two never
 double-capture.
 
 Three distinct capture paths, kept separate on purpose:
   cairn_note              = salience   (deliberate, owner/agent-chosen notes)
-  notify hook             = agentic    (real-time, notify-fired events, partial)
-  import codex-sessions   = full chat  (this module; batch, dry-run first)
+  notify hook             = live       (real-time, notify-fired turns; coverage version-dependent)
+  import codex-sessions   = full store (this module; batch backfill, dry-run first)
 
 DESIGN (verified against the live store):
   - Recursive glob across ALL date dirs. A rollout file's path date is its

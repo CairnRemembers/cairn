@@ -197,6 +197,20 @@ def test_history_from_alias_maps_to_include_before(monkeypatch):
     assert captured.get("include_before") == "2026-06-01"          # back-compat alias works
 
 
+def test_walk_error_surfaced_when_zero_files(monkeypatch, capsys):
+    # a totally inaccessible tree yields files_scanned=0 AND walk_errors=1 — the
+    # warning must STILL print (it was hidden behind the zero-files early return).
+    import cairn.local_agent_reader as _lar
+    monkeypatch.setattr(_lar, "read_local_agent_sessions",
+                        lambda **_: {"account": None, "root": "X",
+                                     "files_scanned": 0, "walk_errors": 1})
+    from cairn.__main__ import cmd_import_local_agent_sessions
+    cmd_import_local_agent_sessions([])
+    out = capsys.readouterr().out
+    assert "could not be listed" in out and "1 folder" in out       # surfaced, not hidden
+    assert "no transcripts found" in out                            # both messages shown
+
+
 # ── issue #2: doctor sees the Codex MCP wire ──────────────────────────────────
 def test_doctor_reports_codex_mcp(tmp_path, monkeypatch):
     import cairn.vault as vaultmod

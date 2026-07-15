@@ -119,8 +119,8 @@ doctor` flags a conflict. Reverse anytime: `cairn disconnect [--global]`.
 each opt-in, each independent (wiring one does not wire the others):
 
 1. **Tools over MCP** (§6a) — the eight `cairn_*` tools, native in Codex.
-2. **Agentic capture** (§6b) — the `notify` hook records agentic/notify-fired turns
-   (**not** plain chat).
+2. **Live capture** (§6b) — the `notify` hook records the turns Codex fires `notify`
+   for, as they happen (deduped by turn id).
 3. **The `AGENTS.md` protocol** (§6c) — makes Codex *use* memory without being asked.
 4. **Plain-chat import** (§6d) — `import codex-sessions` files your conversational chat.
 
@@ -164,13 +164,14 @@ vault returns an empty-but-valid digest — that's success. You now have all eig
 > the notify hook is installed, so still confirm with the smoke test, `codex mcp
 > list`, and `cairn codex-hook status`.
 
-### 6b · Agentic capture  *(optional — off by default)*
+### 6b · Live capture  *(optional — off by default)*
 Wrap Codex's `notify` hook so notify-fired turns (agentic/computer-use turns and
 filtered backstage helper events) are captured as `conversation_turn` nodes (session
-`codex-<thread-id>`, tagged `codex` + `conversation`), no manual noting. Note: Codex
-does **not** fire `notify` for plain conversational chat, so those turns aren't
-captured here — full plain-chat capture is a separate command, `import codex-sessions`
-(§6d below). `cairn_note` remains the on-demand path for salience:
+`codex-<thread-id>`, tagged `codex` + `conversation`), no manual noting. What Codex
+fires `notify` for is **version-dependent** — current builds fire per turn (plain
+conversation included); older builds fired only on agentic/computer-use turns. Whatever
+`notify` sees lands live and deduped; for a comprehensive sweep of everything on disk,
+use `import codex-sessions` (§6d below). `cairn_note` remains the on-demand path for salience:
 
 ```bash
 python -X utf8 -m cairn codex-hook install
@@ -258,9 +259,10 @@ rules, and resume the READ/WRITE habits above.
 ```
 
 ### 6d · Full plain-chat capture  *(optional — `import codex-sessions`)*
-The notify hook (§6b) only sees agentic/notify-fired turns. Your **plain**
-conversation with Codex is written to `~/.codex/sessions/**/rollout-*.jsonl` — this
-command reads those (READ-ONLY) and files them as `conversation_turn` nodes, deduped
+The notify hook (§6b) captures turns live as Codex fires `notify`; this command is the
+comprehensive backfill. Your Codex conversation is written to
+`~/.codex/sessions/**/rollout-*.jsonl` — this command reads those (READ-ONLY) and files
+them as `conversation_turn` nodes, deduped
 against the hook so the two never double-capture.
 
 ```bash
@@ -285,7 +287,7 @@ python -X utf8 -m cairn import codex-sessions --apply    # write the new-going-f
   login on the same machine can't be told apart (a documented known limit).
 
 The three Codex→vault paths, kept distinct: `cairn_note` = salience · `notify` =
-agentic events · `import codex-sessions` = full plain chat.
+live per-turn capture · `import codex-sessions` = comprehensive deduped backfill.
 
 ### Troubleshooting
 - **Tools never appeared at all?** The configured interpreter probably can't
