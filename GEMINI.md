@@ -1,4 +1,4 @@
-<!-- cairn:start v2 -->
+<!-- cairn:start v3 -->
 ## Cairn memory (local-first)
 This project uses Cairn. Before working:
 1. `python -m cairn doctor` — act ONLY on its ✗/⚠ items; never recreate ✓ items.

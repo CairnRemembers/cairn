@@ -1485,13 +1485,15 @@ def cmd_connect(args: list[str]) -> None:
     # Claude is covered by the hooks above. Other agents (Codex, Gemini, Cursor,
     # Windsurf) read their own rules file — drop a SELF-CONTAINED Cairn block.
     if root is not None and "--no-rules" not in args:
-        # v2 marker: bumping the version makes re-connect REFRESH a stale block
+        # v3 marker: bumping the version makes re-connect REFRESH a stale block
         # in place (markers preserved) instead of skipping it forever.
         block = (
-            "<!-- cairn:start v2 -->\n"
+            "<!-- cairn:start v3 -->\n"
             "## Cairn memory (local-first)\n"
             "This project uses Cairn. Before working:\n"
             "1. `python -m cairn doctor` — act ONLY on its ✗/⚠ items; never recreate ✓ items.\n"
+            "   (Its MCP line reads Claude Desktop's config only — never \"fix\" a Codex wire\n"
+            "   because of it; check `codex mcp list` / `cairn codex-hook status` instead.)\n"
             "   If it says the vault is EMPTY and you're a remote/cloud agent, do NOT import\n"
             "   history or assume context — ask the user (the real vault is on their machine).\n"
             "2. `python -m cairn orient` — load inherited context before your first action.\n"
@@ -1536,7 +1538,7 @@ def cmd_connect(args: list[str]) -> None:
                     continue
                 nl = "\r\n" if "\r\n" in existing else "\n"
                 blk = block if nl == "\n" else block.replace("\n", "\r\n")
-                if "cairn:start v2" in existing:
+                if "cairn:start v3" in existing:
                     continue  # current block already present
                 start = existing.find("<!-- cairn:start")
                 end_m = existing.find("<!-- cairn:end -->")
@@ -1559,7 +1561,7 @@ def cmd_connect(args: list[str]) -> None:
         if wrote:
             print(f"       rules shims: {', '.join(wrote)} (Codex/Gemini/Cursor/Windsurf → run doctor)")
 
-    print("       mute one chat: set CAIRN_CAPTURE=0   ·   pause all: cairn capture off")
+    print("       mute one chat: set CAIRN_CAPTURE=0 (PowerShell: $env:CAIRN_CAPTURE=\"0\")   ·   pause all: cairn capture off")
     print(f"       disconnect: cairn disconnect{' --global' if is_global else ''}")
 
 

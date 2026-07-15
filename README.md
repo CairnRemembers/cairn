@@ -1,288 +1,259 @@
 # Cairn
 
-**Every model. One memory.**
+[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![Version 0.2.1](https://img.shields.io/badge/version-0.2.1-green)
+![Patent pending](https://img.shields.io/badge/patent-pending-orange)
+![Local-first](https://img.shields.io/badge/local--first-no%20cloud-brightgreen)
 
-**Local-first episodic memory for AI agents — and for you.** Claude, Codex, and any
-other AI you connect read and write **one shared vault on your machine** — what you
-worked out with one model, the next one already knows. Run out of usage on one
-model? Open another: **your work is already there.**
+> **Build knowledge. Leave signals.** — Tools for modern explorers.
 
-> **Build knowledge. Leave signals.** · Tools for modern explorers.
+**Local-first episodic memory for AI agents — and for you.**
 
-**👤 New here?** [**Setup**](#setup) gets you running in ~5 minutes — the ⚡ "let your AI do it" lane or the human steps. Full reference: [`QUICKSTART.md`](QUICKSTART.md).
+<!-- hero image slots here: assets/cairn-hero.png (the galaxy — from the brand pass) -->
 
-A cairn is a stack of stones that marks a path. This one marks the path of your
-thinking: every decision, dead end, and reason gets captured as a node, embedded,
-and made retrievable across sessions **and across models**. Nothing leaves your
-machine.
+A cairn is a stack of stones that marks a trail. This one marks the trail of your
+*thinking*: every decision, dead end, and reason becomes a node you — and any model —
+can find again, across sessions and across model generations.
 
-- **Local-first** — everything lives in `~/.cairn/cairn.db`. No cloud, no sign-up.
-  The only thing that ever leaves your machine is a one-time model download —
-  see [What leaves your machine](#what-leaves-your-machine).
-- **One vault, every AI** — Cairn reads the login you already have; each AI account
-  gets its own **galaxy** in the same local vault. Nothing to register.
-- **Every memory keeps its source** — which model, which account, which session:
-  provenance is first-class, so you always know who wrote what.
+- **Local-first** — everything lives in one SQLite file at `~/.cairn/`. No cloud, no account, no telemetry.
+- **Model-agnostic** — any agent that runs a shell command or speaks MCP: Claude, GPT/Codex, Gemini, local models.
 - **Append-only** — memories are voided, never deleted. The record is the record.
-- **Model-agnostic** — any agent that can run a shell command or speak MCP; most
-  extensively tested with **Claude Code and Codex** (the proof pair, not the boundary).
-- **Light** — stdlib + numpy at the core; the embedder and dashboard are optional extras.
+- **Yours** — Cairn sends nothing off your machine. Your chat still goes to whatever model you chose, exactly as it would without Cairn — use a local model and nothing leaves at all.
 
-## Setup
+**Two ways in:**
+- 🧑 **A person setting this up?** Keep reading — [Quick start](#quick-start) takes about 5 minutes. Every option and fix: [QUICKSTART.md](QUICKSTART.md).
+- 🤖 **An AI agent installing Cairn for someone?** → [SETUP_FOR_AGENTS.md](SETUP_FOR_AGENTS.md) is written for you (install, consent, attribution).
 
-> ### ⌨️ These commands run in your terminal — not in your AI chat
-> Everything below (`git`, `install`, `cairn …`) goes in **PowerShell / Terminal**,
-> the same place you run `git`. The **only** thing you type *into your AI* is the one
-> line in the ⚡ lane. Pasting `cairn` commands into a chat box won't set anything up.
+---
 
-Two ways in — pick one.
+## Contents
+- [Quick start](#quick-start)
+- [Wire up your AI](#wire-up-your-ai)
+- [What you get](#what-you-get)
+- [Advanced install](#advanced-install)
+- [Multiple accounts](#multiple-accounts)
+- [What to back up](#what-to-back-up)
+- [Common commands](#common-commands)
+- [License](#license)
 
-### ⚡ Fastest — let your AI set it up
+---
 
-Open Claude Code, Codex, or Cursor and paste this to your AI:
+## Quick start
+
+> **Two places, never mixed up:**
+> 🖥️ **Your terminal** (PowerShell / Terminal) — every command on this page runs here, on your computer. Wiring is always a terminal command or a config-file edit — an AI can run those terminal steps *for* you (that's the fastest path below), but wiring is never something you paste into the chat box.
+> 💬 **The AI chat** — where memory shows up, and where you *test* the wiring by asking the AI to use it.
+
+### Fastest — let your AI do it
+Open Claude Code, Codex, or Cursor and paste:
 
 > Install and set up Cairn for me from https://github.com/CairnRemembers/cairn
 
-Your AI clones it, runs the installer, and walks you through `cairn setup` — one
-short yes/no per AI you use. It follows [`SETUP_FOR_AGENTS.md`](SETUP_FOR_AGENTS.md),
-so it runs the right command for each harness instead of guessing. This is the
-least-effort path.
+Your AI runs the terminal steps and asks before switching memory on — one yes/no per
+AI on your machine, default **No**. Nothing records without your yes. *(Using Codex?
+There's one extra paste after that — see [Wire up your AI](#wire-up-your-ai).)*
 
-### 🧑 Or do it yourself — 5 steps
+### Or do it yourself
 
-Run each block in your terminal, then move to the next.
-
-#### Step 1 — Get the code
-
-```
+**1 — Get the code** 🖥️
+```bash
 git clone https://github.com/CairnRemembers/cairn
 cd cairn
 ```
 
-#### Step 2 — Install *(needs Python 3.11+)*
-
-**Windows** — run it this way so Windows' script policy can't block it:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-**macOS / Linux:**
-
+**2 — Install** 🖥️ *(installs software only — records nothing, the vault starts empty)*
 ```bash
-./install.sh
+# Windows:      .\install.ps1      (blocked? powershell -ExecutionPolicy Bypass -File .\install.ps1)
+# macOS/Linux:  ./install.sh
 ```
+The installer finds Python 3.11+, installs everything (first run downloads PyTorch — a
+few minutes), and checks itself.
 
-> On a modern Linux/mac where the system Python is *"externally managed"* (Debian 12+,
-> Ubuntu 23.04+, Fedora, Arch, Homebrew), make a virtual environment first, then install:
-> `python3 -m venv .venv && source .venv/bin/activate` → `./install.sh`.
-
-The installer finds Python, installs everything, and checks itself. First run pulls
-PyTorch (a few hundred MB, a few minutes) — that's the heaviest part, and it's the
-only large download at install time.
-
-#### Step 3 — Turn on memory
-
-```
-python -X utf8 -m cairn setup
-```
-
-This is the step that makes Cairn actually remember — **capture is off until you do
-it.** Setup asks **one yes/no question per AI you use** (default *No*): a typical
-person with both Claude Code and Codex answers **two** prompts and is done. It runs
-the correct command for each — you don't pick commands yourself.
-
-#### Step 4 — Open a new AI chat
-
-Start a *fresh* chat in your AI. Memory switches on for **new** chats — not the one
-you're already in.
-
-#### Step 5 — Check it worked
-
-```
-python -X utf8 -m cairn doctor
-```
-
-The **`capture`** line shows a ✓. Done — from now on, new chats remember. See your
-memory map any time with `python -X utf8 -m cairn dashboard` (opens
-http://127.0.0.1:7331, local only).
+**3 — Wire up your AI.** This is where memory actually turns on, and **each AI needs
+different wiring** — a `y` in setup finishes the job for Claude Code, but *not* for
+Codex or Claude Desktop. Find your AI below and follow it to its ✅.
 
 ---
 
-**If something snags**
+## Wire up your AI
 
-- **First move, always:** `python -X utf8 -m cairn doctor` — it names exactly what's
-  missing. *(One known gap: doctor's **MCP** line checks Claude Desktop only — a
-  correctly-wired **Codex** can read "MCP: not found". For Codex, trust
-  `codex mcp list` + `cairn codex-hook status` instead.)*
-- **Memory map shows one big cloud in the middle?** Normal for a vault before its
-  first sleep — not a bug, not merged accounts. Run `python -X utf8 -m cairn sleep`
-  once, restart the dashboard, hard-refresh: galaxies separate after that first bake.
-- **"No supported AI harnesses detected"?** Install Claude Code or Codex first, then re-run Step 3.
-- **"requires fastapi and uvicorn" even after installing?** You have two Pythons — reinstall with the same one: `python -m pip install -e ".[all]"` (keep the quotes exactly).
-- **Garbled output on Windows?** Prefix commands with `python -X utf8 -m cairn …`.
-- **Want your AI to *search* the vault as tools** (Claude Desktop / Cursor / Codex)? See [QUICKSTART §6](QUICKSTART.md#6--use-cairn-from-codex).
+Cairn has **two separate wires**, and knowing the difference prevents every common surprise:
 
-## What actually turns on — and how you know
+- **Capture** — your chats get *remembered* automatically (writes to the vault).
+- **Tools** — the AI can *search and note* your vault from inside the chat (reads + on-demand writes).
 
-Two separate ideas. Keeping them apart clears up most confusion:
+Some AIs need one wire, some need both. Don't stop at the first ✓ — follow your AI to its ✅ line.
 
-- **Activation** = turning capture on. **One terminal command, once — then it's
-  machine-wide.** `cairn setup` (or `cairn connect --global` for Claude directly)
-  wires it for *every* future chat and every account on this machine. You never
-  repeat it, and adding another AI account later never needs a re-install.
-- **Attribution** = which **galaxy** a chat's memories land in — just a label. See
-  [Accounts & galaxies](#accounts--galaxies).
-
-**How you know it's live:** open a new chat. The `CAIRN — inherited context` banner
-at the top means the hooks fired — capture is on. (On a brand-new vault the very
-first chat prints `starting fresh` instead — same proof, the hooks fired.) `cairn doctor` confirms it too.
-Running `orient` is *not* what turns capture on — it only **reads** your memory and
-prints what carried over. Proof-of-capture is: hooks installed **and** a fresh chat
-started after you installed them.
-
-**Capture scope — recommended: global.**
-
-| Scope | Command | Captures |
-|---|---|---|
-| **🌍 Global** *(recommended)* | `cairn connect --global` | every Claude Code chat on this machine |
-| **Per-project** | `cairn connect` | every chat *in that one repo* |
-| **Off** (default) | *(nothing)* | only what you explicitly `cairn note` |
-
-Most people want **global** — one command, every chat, nothing to repeat. `cairn
-setup` chooses global for you. Global and per-project are mutually exclusive; reverse
-either with `cairn disconnect [--global]`.
-
-> **Codex is a separate switch.** `connect --global` is **Claude Code only.** Codex
-> capture is turned on by `cairn codex-hook install` (`cairn setup` does this for you
-> if Codex is present). See [Using Cairn from Codex](#using-cairn-from-codex).
-
-**Privacy controls** — because not every chat belongs in your brain:
-- Skip recording one chat (even under global): `set CAIRN_CAPTURE=0` in that shell.
-- Pause everywhere: `cairn capture off` (resume: `cairn capture on`).
-- Secrets are scrubbed before write (append-only, fail-closed); opt out only with `CAIRN_NO_REDACT=1`.
-
-## Accounts & galaxies
-
-You never make a Cairn account. Cairn reads the AI login you already have and gives
-each one its own **galaxy** inside your one local vault, so your Claude work and your
-Codex work don't blur together.
-
-- **One account per AI (the common case):** captured automatically into its own
-  galaxy, labeled from your login — nothing to do.
-- **A second account of the *same* AI on one machine:** Cairn keeps them apart **when
-  it can read a distinct identity for each** — Claude Desktop's per-session proof, or
-  a distinct login id. Where it *can't* tell them apart cleanly (two logins that fall
-  back to the same name — e.g. a shared handle, or an unreadable login), the newer
-  one may land under the first one's label until you correct it. That label is
-  provisional and fixable — it never overwrites a confirmed one. To set it straight:
-
+### Claude Code — one command
+🖥️ In the terminal:
+```bash
+python -X utf8 -m cairn setup        # answer y for Claude Code
 ```
-python -X utf8 -m cairn account fix-session "My Work Claude"   # label this session
-python -X utf8 -m cairn account rename <key> "My Work Claude"   # rename the galaxy
+That wires **capture**: every **new** Claude Code chat auto-orients (you'll see the
+banner), records as you work, and compiles when it ends. Machine-wide, one-time,
+reversible (`cairn disconnect --global`). Prefer one project only? Run `cairn connect`
+inside that repo instead (global and per-project are mutually exclusive — `doctor` flags it).
+
+✅ **Done when:** a **new** chat opens with a **"CAIRN — inherited context"** banner,
+and 🖥️ `python -X utf8 -m cairn doctor` shows **✓ capture**.
+
+*Optional — native tools:* Claude Code can already read the vault by running `cairn`
+commands in its shell. For native `cairn_*` tools instead, register the MCP server
+user-wide, pointing at the Python that can `import cairn` (a bare `python` that can't
+is the #1 failure — [prove the path first, QUICKSTART §6a](QUICKSTART.md#6a--tools-via-mcp)):
+```bash
+claude mcp add --scope user cairn -- <full-path-to-python> -X utf8 -m cairn mcp
+```
+💬 Proof: ask the chat to *"call cairn_orient"*. *(`doctor` can't see this wire — the ask is the test.)*
+
+### OpenAI Codex — three pieces, each does a different job
+1. **Capture** 🖥️ — `python -X utf8 -m cairn setup` → `y` for Codex (= `codex-hook install`).
+   Captures **agent-turn events** as they happen. Plain conversation is *not* captured
+   this way — pull it in whenever you want with 🖥️ `python -X utf8 -m cairn import codex-sessions --apply`.
+2. **Tools** 📄 — add to `~/.codex/config.toml`, then fully restart Codex
+   ([full §6 walk-through](QUICKSTART.md#6--use-cairn-from-codex)):
+```toml
+[mcp_servers.cairn]
+command = "<full-path-to-python>"
+args = ["-X", "utf8", "-m", "cairn", "mcp"]
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+default_tools_approval_mode = "approve"
+```
+3. **Habit** 📄 — create `~/.codex/AGENTS.md` and paste the memory protocol from
+   [QUICKSTART §6c](QUICKSTART.md#6--use-cairn-from-codex) so Codex orients, fetches,
+   and notes **unprompted**. *(Needs piece 2 — the protocol calls those tools.)*
+
+✅ **Done when:** 🖥️ `python -X utf8 -m cairn codex-hook status` prints **INSTALLED**,
+and 💬 a Codex chat answers *"call cairn_orient"* with a digest (with piece 3, its first
+reply starts `[cairn: oriented — N]`).
+⚠️ *Honest note:* `cairn doctor` verifies neither Codex wire yet — it may mention Codex
+sessions it finds, but it is not a Codex-completion certificate. The checks above are the real proof.
+
+### Claude Desktop / Cursor — one paste
+📄 Add to `claude_desktop_config.json` (or Cursor's MCP settings), then restart the app:
+```json
+{
+  "mcpServers": {
+    "cairn": { "command": "python", "args": ["-X", "utf8", "-m", "cairn", "mcp"] }
+  }
+}
+```
+That's the **tools** wire — search, fetch, wander, note from inside the chat. These
+surfaces have **no ambient capture**; what you ask the AI to `cairn_note` is what lands.
+*(If the app can't find Python, use the full path of the Python that installed Cairn.)*
+
+✅ **Done when:** `doctor` shows **✓ MCP — registered in Claude Desktop config**
+(Desktop), or 💬 the *"call cairn_orient"* smoke test answers (Cursor).
+
+---
+
+**Applies to every AI above:**
+- **Wiring is one-time.** New chats just remember — you never activate per chat. `orient` *reads* memory; it never switches anything on. Scope varies by wire: Claude Code hooks are machine-wide (or one project via `cairn connect`); Desktop/Cursor and Codex live in each app's own config, per account.
+- **Only NEW chats pick up new wiring** — finish wiring, then open a fresh chat. (Long-lived MCP clients re-read the tools only on a full restart.)
+- **Privacy controls:** skip one chat — `CAIRN_CAPTURE=0` in that shell (PowerShell `$env:CAIRN_CAPTURE="0"` · cmd `set CAIRN_CAPTURE=0` · bash `export CAIRN_CAPTURE=0`) · pause everywhere: `cairn capture off` / `on` · secrets scrubbed before write (append-only, fail-closed).
+- **Undo:** `cairn disconnect [--global]` · `cairn codex-hook uninstall` · re-run `cairn setup` to review.
+
+---
+
+## What you get
+
+- **One vault, every model.** Any agent that speaks MCP or can run `cairn` reads and writes the same memory — so one agent builds on what another wrote, even across rival vendors.
+- **Keep your place across a usage cap.** Hit a limit on one model, continue on another, and point it at where you left off — the trail is in the vault, not in one model's context.
+- **Captured as you work** — decisions, dead ends, tool calls, and turns become searchable nodes, from the moment you wire it.
+- **Nothing worth keeping disappears.** Every captured turn stores its complete text: search results are gists — an index — `cairn read <id>` prints any node in full, and MCP `cairn_read` pulls it whole with a raised `max_chars`.
+- **A local maintenance pass you run** — `cairn sleep`, nightly by habit or on your own scheduler (it doesn't schedule itself): embed → consolidate → prune → rebuild the graph → compile, all on your machine. One exception to "no network": the very first embed downloads the ~80 MB model, once.
+- **A map of your thinking** — the dashboard galaxy (`cairn dashboard` → http://127.0.0.1:7331), plus a human-readable Hub / Book / Index.
+- **Backfill** — distill old conversations into sharp, connected `claim` nodes.
+
+---
+
+## Advanced install
+
+<details>
+<summary>Manual install, lighter builds, and venvs</summary>
+
+**By hand** (what the installer runs):
+```bash
+pip install -e ".[all]"      # package + embedder + dashboard
+```
+**Lighter builds:**
+```bash
+pip install -e ".[embeddings]"   # no dashboard
+pip install -e ".[dashboard]"    # no embedder
+```
+Base install is stdlib + `numpy`. Extras add the embedder (`sentence-transformers` — the ~80 MB model downloads once, on first use) and the dashboard (`fastapi` + `uvicorn`).
+
+> **Note:** Cairn installs from this repo — there is no `pip install cairn-remembers` package yet. Clone, then install as above.
+
+**PEP-668 "externally-managed-environment"** (Ubuntu/Debian/Homebrew/WSL): install into a venv first —
+```bash
+python3 -m venv .venv && source .venv/bin/activate && ./install.sh
+```
+</details>
+
+---
+
+## Multiple accounts
+
+**One login per AI? Skip this — it just works.** Each AI signs in with its own
+account, and Cairn files that AI's work under its own galaxy automatically —
+Claude and GPT never mix, with zero setup.
+
+**Read on only if you run two accounts of the *same* AI** (two Claude logins, two
+ChatGPT/Codex logins — say, **personal and company**). Galaxies are keyed to each
+login's stable id and **never merge** — but with two same-AI logins on one machine,
+Cairn can't always *prove* which one is active. The rule that keeps it clean:
+
+> **Declare, don't detect: set `CAIRN_ACCOUNT` per account, up front.**
+
+```bash
+# Claude Code — launch each account with its label:
+export CAIRN_ACCOUNT=work && claude        # bash/zsh (or set it in that profile)
+#   PowerShell: $env:CAIRN_ACCOUNT="work"; claude
+# Codex — put it in that account's ~/.codex/config.toml:
+#   [mcp_servers.cairn]  env = { CAIRN_ACCOUNT = "work" }
+# Importing old history? Always pass the flag:
+cairn import <export> --source=claude --account=work
 ```
 
-The name is cosmetic; Cairn anchors each memory to the real account id from your
-login file, so renaming never merges or moves memories. If you run two accounts of
-the same AI and want them cleanly split, `cairn account doctor` shows how each
-session was attributed.
+Name and manage them anytime:
+```bash
+cairn account                          # list galaxies + node counts
+cairn account rename <key> "Company"   # display label only — never merges or deletes
+cairn account doctor                   # read-only check — prints the exact fix command per mismatch
+cairn account fix-session <session-id> <slug>   # re-file ONE named session (backed up, then locked)
+cairn account fix-session <slug>                # same, for the current session only
+```
 
-## Using Cairn from Codex
+**Honest limits** — so you're never surprised:
+- **Claude Desktop** proves the active account per session automatically. **Claude Code CLI and Codex can't** — they follow the machine's current login file, so an account switch mid-stream can label sessions with the previous account, silently. `CAIRN_ACCOUNT` is the guarantee; detection is not.
+- `account doctor` verifies what's *provable* (Claude Desktop sessions); it can't audit pure-CLI or Codex history.
+- Append-only applies here too: renames change display labels only; nothing merges, nothing deletes.
 
-Codex reaches the vault three ways, all opt-in (full details in
-[QUICKSTART §6](QUICKSTART.md#6--use-cairn-from-codex)):
-
-1. **Tools over MCP** — `cairn_orient / fetch / search / note …` as native Codex
-   tools. Two things bite here: the config must point at the **exact Python your
-   install used** (venv: `…\.venv\Scripts\python.exe`), and Codex needs a **full
-   restart** after the config edit — working block in [QUICKSTART §6a](QUICKSTART.md#6a--tools-via-mcp).
-2. **`cairn codex-hook install`** — captures Codex's *agentic* (notify-fired) turns.
-   **Not** plain conversational chat.
-3. **`cairn import codex-sessions --apply`** — files your plain Codex chat (optional,
-   forward-only, dry-run first). Note: `--include-before=DATE` is a **lower bound** —
-   it imports turns dated *on or after* that date up to now, not everything before it.
-   On Windows, very deep session paths can exceed the 260-char limit and fail to read
-   — the import report counts them, so check it if a thread doesn't land.
-
-## What leaves your machine
-
-Cairn is local-first, and here is the whole truth of it:
-
-- **At install:** `pip` pulls the declared dependencies from PyPI — including PyTorch
-  (hundreds of MB) if you install the embedder.
-- **On your first semantic search or embed:** a one-time **~80 MB** download of the
-  open-source embedding model `all-MiniLM-L6-v2` from **huggingface.co** — fetched
-  **anonymously, no account or token**. It is *not* downloaded at install, at import,
-  or when a memory is captured. After that one download, Cairn forces offline mode so
-  the embedder never touches the network again.
-- **Everything else runs with zero network:** capturing, notes, keyword-fallback
-  search, and the dashboard (bound to `127.0.0.1` only). **No telemetry, no analytics,
-  no other host is ever contacted.**
-
-Skip even that one download with the lighter `pip install -e ".[dashboard]"` (no
-embedder): capture still works fully; search falls back to keyword matching.
+---
 
 ## What to back up
 
-Only one folder matters: your **vault** at `~/.cairn/` (that's `cairn.db` — your
-actual memories). **Back that one up.** Everything else is replaceable — the code
-lives on GitHub, and reinstalling never touches your vault.
+One folder: your vault at **`~/.cairn/`** (that's `cairn.db` — your actual memories). Back that up. Everything else is replaceable — the code lives here on GitHub, and reinstalling never touches your vault.
 
-## Sessions — a new chat is a new session
-
-You don't start a session by hand. When capture is on, the harness gives every chat
-its own session id and Cairn's hooks stamp it on each tool call — so **each new chat
-is a new session**. `orient` opens it by printing what carried over (decisions, open
-items, the delta from last time) — it *reads* the past, it doesn't begin the session.
-
-The exception is a runtime where the hooks never fire — Claude Desktop agent mode,
-a local-model frontend, a bare terminal, cron. There nothing records the session,
-so notes would attach to the *previous* one. Stamp a clean session yourself:
-
-```bash
-python -m cairn session --new        # auto-named session-YYYY-MM-DD-HHMM
-python -m cairn session my-feature    # or name it
-python -m cairn session               # show current session + where it came from
-```
-
-## Backfill — distill your history into connected memory
-
-Old conversations — imported history, or sessions captured before you connected
-Cairn — land as raw turns: searchable, but weakly linked. **Backfill distills
-them** into sharp `claim` nodes (the decisions, insights, and ideas each
-conversation actually holds).
-
-```bash
-python -m cairn backfill native --estimate   # show the token cost first — no surprises
-python -m cairn backfill native               # distill your own captured work
-python -m cairn backfill claude --source-file=<claude-export>/conversations.json
-python -m cairn backfill finalize             # embed new claims + rebuild edges
-```
-
-- **Cost-warned** — `--estimate` prints the conversation count + token estimate before you spend.
-- **Idempotent** — already-distilled sessions are skipped; safe to stop and resume.
-- **Agent-driven** — the connected model does the extraction (no bundled LLM, per the charter).
+---
 
 ## Common commands
 
-`orient` · `note` · `fetch` · `wander` · `query` / `xquery` · `embed` · `edges`
-(rebuild the graph + atlas) · `book` · `sleep` (nightly: embed → consolidate →
-prune → edges → book → compile → audit → registry) · `dashboard` · `connect` /
-`disconnect` / `capture` · `account` · `doc` · `import` · `backfill`.
+`orient` · `note` · `fetch` · `wander` · `query` · `read` (any node in full) · `dashboard` · `doctor` · `setup` · `connect` / `disconnect` / `capture` · `account` · `backfill` · `sleep` (the maintenance cycle — you run it) · `edges` · `book` · `import`
 
-## Charter
+Full reference with every option: [QUICKSTART.md](QUICKSTART.md).
 
-Local-first forever. Append-only. Minimal deps (stdlib + numpy / sentence-transformers
-/ fastapi+uvicorn only). Model-agnostic.
+---
 
 ## License
 
-**Free for personal and non-commercial use** under the
-[Business Source License 1.1](LICENSE) — read it, run it, modify it, self-host
-it, keep it. **Commercial or business use requires a commercial license** — email
-**licensing@cairnremembers.com** and we'll sort out terms — that's what keeps Cairn
-independent and maintained. Source-available, not OSI "open source"; each release converts to
-the permissive MIT License on the Change Date stated in its LICENSE.
+**Free for personal and non-commercial use** under the [Business Source License 1.1](LICENSE) — read it, run it, modify it, self-host it. **Commercial or business use requires a commercial license** — email **licensing@cairnremembers.com**. Source-available (not OSI "open source"); each release converts to the permissive MIT License on the Change Date in its LICENSE.
 
-Patent pending — a U.S. provisional patent application (filed 2026-07-07) covers
-Cairn's core mechanisms. **Cairn Remembers™** is a trademark of James Wescott Maitland IV.
+Patent pending — a U.S. provisional application (filed 2026-07-07) covers Cairn's core mechanisms. **Cairn Remembers™** is a trademark of James Wescott Maitland IV.
+
+---
+
+*Knowledge is a trail, not a destination.*

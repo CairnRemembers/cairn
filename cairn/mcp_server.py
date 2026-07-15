@@ -53,7 +53,8 @@ TOOLS = [
             "Call this INSTEAD of re-reading files or scrolling history — it "
             "replaces the re-reading tax with a targeted answer. Top hits come "
             "back as capped previews (~1800 chars), the rest as gists — "
-            "cairn_read returns any node's complete text."),
+            "cairn_read returns any node's complete text (raise max_chars "
+            "for very long nodes)."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -76,7 +77,8 @@ TOOLS = [
             "connections (a past project, an old conversation, an idea from a "
             "different domain) that similarity search will never return. Use "
             "when brainstorming, stuck, or asked for fresh angles. Returns "
-            "gists — cairn_read pulls any hit in full."),
+            "gists — cairn_read pulls any hit in full (raise max_chars for "
+            "very long nodes)."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -94,7 +96,8 @@ TOOLS = [
         "description": ("Ranked hybrid search across the whole vault. Returns "
                         "ids + gists + scores (cheap) — an index, not the text. "
                         "Pass the ids that matter to cairn_read for their full "
-                        "text (cairn_fetch for a budgeted context pack)."),
+                        "text — raise max_chars for very long nodes "
+                        "(cairn_fetch for a budgeted context pack)."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -139,7 +142,8 @@ TOOLS = [
         "name": "cairn_recent",
         "description": ("The working set: recent decisions, open items, and "
                         "warnings across the vault — what's live right now. "
-                        "Returns gists — pass ids to cairn_read for full text."),
+                        "Returns gists — pass ids to cairn_read for full text "
+                        "(raise max_chars for very long nodes)."),
         "inputSchema": {
             "type": "object",
             "properties": {"limit": {"type": "integer", "default": 12}},
@@ -176,7 +180,8 @@ TOOLS = [
                         "This is how you see what just happened (fetch/search "
                         "can't see un-embedded nodes until the nightly sleep). "
                         "Filter by kind, session prefix, or a contains "
-                        "substring; follow up with cairn_read for full text."),
+                        "substring; follow up with cairn_read for full text "
+                        "(raise max_chars for very long nodes)."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -282,7 +287,8 @@ def _tool_search(args: dict) -> str:
     for d in rows:
         gist = d.get("gist") or (d.get("query") or "")[:80]
         out.append(f"  [{d.get('id')}] ({d.get('kind')}, {d.get('score',0):.2f}) {gist}")
-    out.append("\nuse cairn_read for full text of what matters.")
+    out.append("\nuse cairn_read for full text of what matters "
+               "(raise max_chars for very long nodes).")
     return "\n".join(out)
 
 
@@ -359,7 +365,8 @@ def _tool_recent(args: dict) -> str:
     out = ["working set (most recent):"]
     for r in rows:
         out.append(f"  [{r['id']}] ({r['kind']}) {(r['query'] or '')[:90]}")
-    out.append("\nfull text of any of these: cairn_read with the id(s).")
+    out.append("\nfull text of any of these: cairn_read with the id(s) "
+               "— raise max_chars for very long nodes.")
     return "\n".join(out)
 
 
@@ -496,7 +503,8 @@ def _tool_logs(args: dict) -> str:
         sess = (r["session"] or "")[:26]
         out.append(f"  {mark} [{r['id']}] {t} {r['kind']}/{r['speaker'] or '?'} ({sess}) {r['gist']}")
     out.append("\n○ = not yet embedded (invisible to fetch/search until sleep). "
-               "Full text: cairn_read with the id(s).")
+               "Full text: cairn_read with the id(s) — raise max_chars for "
+               "very long nodes.")
     return "\n".join(out)
 
 

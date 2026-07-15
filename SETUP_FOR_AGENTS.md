@@ -102,7 +102,8 @@ re-reading files/history.
 
 **Gists are the index, not the text.** `fetch`/`search`/`logs` return short
 gists and capped previews; the complete stored text of any node is one step
-away — `python -m cairn read <id>` (MCP: `cairn_read`). Before relying on a
+away — `python -m cairn read <id>` prints it in full; over MCP, `cairn_read`
+pulls a long node whole with a raised `max_chars`. Before relying on a
 summary of something important, read it in full.
 
 **You don't start the session — the harness does.** Each chat has its own session

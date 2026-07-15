@@ -1,5 +1,5 @@
 """
-The v2 rules-shim refresh (cmd_connect) — preservation + idempotency.
+The versioned rules-shim refresh (cmd_connect) — preservation + idempotency.
 
 Codex review requirement (2026-07-14): the new refresh-in-place logic writes
 into files cairn does not own (a project's AGENTS.md may hold the user's own
@@ -36,7 +36,7 @@ def test_refresh_preserves_user_content_around_stale_block(tmp_path):
     txt = (proj / "AGENTS.md").read_text(encoding="utf-8")
     assert "keep this line exactly" in txt          # content above survives
     assert "also keep this exactly" in txt          # content below survives
-    assert "cairn:start v2" in txt                  # block upgraded
+    assert "cairn:start v3" in txt                  # block upgraded
     assert "OLD V1 BLOCK CONTENT" not in txt        # stale block replaced
     assert txt.count("<!-- cairn:start") == 1       # exactly one block
 
@@ -46,7 +46,7 @@ def test_connect_is_idempotent_across_all_shims(tmp_path):
     proj.mkdir()
     cmd_connect([str(proj)])                        # first run creates shims
     before = {t: (proj / t).read_text(encoding="utf-8") for t in SHIMS}
-    assert all("cairn:start v2" in b for b in before.values())
+    assert all("cairn:start v3" in b for b in before.values())
 
     cmd_connect([str(proj)])                        # second run: no-op
     after = {t: (proj / t).read_text(encoding="utf-8") for t in SHIMS}
@@ -70,7 +70,7 @@ def test_lf_file_outside_bytes_preserved_exactly(tmp_path):
     assert raw.startswith(top)                      # bytes above: identical
     assert raw.endswith(bot)                        # bytes below: identical
     assert b"\r\n" not in raw                       # LF file stays pure LF
-    assert b"cairn:start v2" in raw
+    assert b"cairn:start v3" in raw
 
 
 def test_crlf_file_keeps_crlf_and_block_matches(tmp_path):
@@ -85,7 +85,7 @@ def test_crlf_file_keeps_crlf_and_block_matches(tmp_path):
 
     raw = (proj / "AGENTS.md").read_bytes()
     assert raw.startswith(top) and raw.endswith(bot)
-    assert b"cairn:start v2" in raw
+    assert b"cairn:start v3" in raw
     # pure CRLF file: every newline is CRLF, in the new block too
     assert raw.count(b"\n") == raw.count(b"\r\n")
 
@@ -102,7 +102,7 @@ def test_bom_preserved_once(tmp_path):
     raw = (proj / "AGENTS.md").read_bytes()
     assert raw.startswith(bom)
     assert raw.count(bom) == 1                      # kept, never duplicated
-    assert b"cairn:start v2" in raw
+    assert b"cairn:start v3" in raw
 
 
 def test_non_utf8_file_left_byte_identical(tmp_path):
@@ -119,6 +119,26 @@ def test_non_utf8_file_left_byte_identical(tmp_path):
     assert (proj / "AGENTS.md").read_bytes() == original   # untouched, exactly
     # the other shims (fresh files) are still written normally
     assert (proj / "GEMINI.md").exists()
+
+
+def test_stale_v2_block_upgraded_to_v3_in_place(tmp_path):
+    """The v2→v3 marker bump: an existing v2 block (widely deployed) must be
+    refreshed in place on the next connect, everything around it preserved."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    pre = ("# House rules\nkeep this line exactly\n\n"
+           "<!-- cairn:start v2 -->\nOLD V2 BLOCK CONTENT\n<!-- cairn:end -->\n\n"
+           "# Tail rules\nalso keep this exactly\n")
+    (proj / "AGENTS.md").write_text(pre, encoding="utf-8")
+
+    cmd_connect([str(proj)])
+
+    txt = (proj / "AGENTS.md").read_text(encoding="utf-8")
+    assert "keep this line exactly" in txt
+    assert "also keep this exactly" in txt
+    assert "cairn:start v3" in txt                  # v2 refreshed to v3
+    assert "OLD V2 BLOCK CONTENT" not in txt
+    assert txt.count("<!-- cairn:start") == 1
 
 
 def test_unmarked_hand_rolled_block_left_alone(tmp_path):
