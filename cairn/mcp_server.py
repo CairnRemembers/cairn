@@ -329,7 +329,10 @@ def _tool_orient(args: dict) -> str:
     try:
         from cairn.book import page_one
         from cairn.vault import _live_account
-        head = page_one(_vault(), account=_live_account("")).strip() + "\n\n"
+        # resolve the REAL MCP session, not "" — an empty id skips the per-session
+        # channel/Desktop/codex rungs, so page_one's galaxy-scoped counts (and the
+        # warning below) would otherwise be computed for no session at all.
+        head = page_one(_vault(), account=_live_account(_session())).strip() + "\n\n"
     except Exception:
         p1 = Path.home() / ".cairn" / "PAGE_ONE.md"
         if p1.exists():
@@ -337,18 +340,21 @@ def _tool_orient(args: dict) -> str:
                 head = p1.read_text(encoding="utf-8", errors="replace").strip() + "\n\n"
             except Exception:
                 head = ""
+    # multi-account ambiguity warning — appended to every return path (''=no warn).
+    from cairn.vault import orient_account_warning
+    warn = orient_account_warning(_session())
     proto_root = Path.home() / ".cairn" / "protocols"
     if not proto_root.exists():
-        return head + "no PROTOCOL.md yet — fresh start."
+        return head + "no PROTOCOL.md yet — fresh start." + warn
     # newest protocol by mtime
     protos = list(proto_root.glob("*/PROTOCOL.md"))
     if not protos:
-        return head + "no PROTOCOL.md yet — fresh start."
+        return head + "no PROTOCOL.md yet — fresh start." + warn
     newest = max(protos, key=lambda p: p.stat().st_mtime)
     text = newest.read_text(encoding="utf-8", errors="replace")
     body = text[:4000] + ("\n... (truncated; use cairn_fetch to dig deeper)"
                           if len(text) > 4000 else "")
-    return head + body
+    return head + body + warn
 
 
 def _tool_recent(args: dict) -> str:

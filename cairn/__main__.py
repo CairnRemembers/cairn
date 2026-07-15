@@ -599,6 +599,18 @@ def cmd_orient(args: list[str]) -> None:
             except Exception:
                 pass
 
+    # multi-account ambiguity warning — printed OUTSIDE the page_one try/except so
+    # a page_one failure never suppresses it (and a warning failure never eats the
+    # page). '' on an unambiguous/single-account session, so most runs print nothing.
+    try:
+        from cairn.vault import orient_account_warning as _oaw
+        _w = _oaw(session).lstrip("\n")
+        if _w:
+            print(_w)
+            print()
+    except Exception:
+        pass
+
     if not protocol.exists():
         # find the best PROTOCOL.md — prefer sessions with intent nodes over empty ones,
         # then fall back to most recently compiled. This prevents a zero-node test session
@@ -2818,7 +2830,8 @@ def cmd_account(args: list[str]) -> None:
         # Desktop cliSessionId proof, and report mismatches. Repairs are never
         # automatic — they go through `fix-session` with explicit approval.
         import re as _re
-        from cairn.accounts import desktop_account, claude_identity, _slug_for_account_uuid
+        from cairn.accounts import (desktop_account, claude_identity,
+                                    codex_identity, _slug_for_account_uuid)
         v = Vault()
         print("account doctor — read-only attribution check\n")
         ci = claude_identity() or {}
@@ -2829,14 +2842,28 @@ def cmd_account(args: list[str]) -> None:
                   + (f"  [{em[:2]}***]" if "@" in em else ""))
         else:
             print("  CLI OAuth (~/.claude.json): none readable")
+        # Codex identity — READ-ONLY lookup only. Must NOT call slug_register (it
+        # WRITES accounts.json for an unregistered id, breaking doctor's promise);
+        # _slug_for_account_uuid reads and returns None for an unknown id.
+        co = codex_identity() or {}
+        if co.get("id"):
+            cx_slug = _slug_for_account_uuid(co["id"]) or "(unregistered id)"
+            cem = co.get("email") or ""
+            print("  Codex auth (~/.codex/auth.json) currently: " + cx_slug
+                  + (f"  [{cem[:2]}***]" if "@" in cem else ""))
+        else:
+            print("  Codex auth (~/.codex/auth.json): none readable")
         uuid_re = _re.compile(r"^[0-9a-fA-F-]{36}$")
         rows = v.conn.execute(
             "SELECT id, account, account_locked FROM sessions WHERE account IS NOT NULL").fetchall()
         covered = agree = mismatch = uncovered = locked = 0
         mismatches = []
+        nonuuid: dict = {}   # account -> count, for the non-Desktop-provable families
         for r in rows:
             sid = r["id"] or ""
             if not uuid_re.match(sid):
+                acct = r["account"] or "(none)"
+                nonuuid[acct] = nonuuid.get(acct, 0) + 1
                 continue
             if r["account_locked"]:
                 locked += 1
@@ -2862,6 +2889,16 @@ def cmd_account(args: list[str]) -> None:
         else:
             print("\n  no Desktop-provable mismatches. (Uncovered sessions are not "
                   "disproven — just unprovable from the Desktop store.)")
+        # Codex / MCP / import sessions carry no Desktop proof — report them
+        # honestly instead of silently skipping (the old behavior hid them).
+        if nonuuid:
+            tot = sum(nonuuid.values())
+            print(f"\n  non-Desktop-provable sessions (Codex / MCP / import): {tot}"
+                  f" — not verifiable from the Desktop store, grouped by stored label:")
+            for acct, c in sorted(nonuuid.items(), key=lambda kv: -kv[1]):
+                print(f"    {acct!r}: {c}")
+            print("    (declare with CAIRN_ACCOUNT, or repair one with "
+                  "cairn account fix-session <session_id> <slug>)")
         print("\n  read-only — nothing changed.")
         return
 
@@ -2874,19 +2911,56 @@ def cmd_account(args: list[str]) -> None:
         from cairn.accounts import desktop_account
         uuid_re = _re.compile(r"^[0-9a-fA-F-]{36}$")
         rest = args[1:]
+        if len(rest) > 2:
+            print("too many arguments.")
+            print("  cairn account fix-session <session_id> [<slug>]   (repair a named session)")
+            print("  cairn account fix-session <slug>                  (label the CURRENT session)")
+            return
+        v = Vault()
+
+        def _sess_exists(x: str) -> bool:
+            return v.conn.execute(
+                "SELECT id FROM sessions WHERE id=?", (x,)).fetchone() is not None
+
+        def _looks_like_session(x: str) -> bool:
+            # session-id SHAPES cairn actually stamps: a bare harness uuid, or a
+            # prefixed family id. Used only to fail closed on an unknown id that
+            # was clearly MEANT as a session, not misread it as a current slug.
+            return bool(uuid_re.match(x)) or x.startswith(
+                ("codex-", "mcp-", "import-", "session-"))
+
+        # Referee = session EXISTENCE, never a regex. This preserves every form:
+        #   <existing-id>          -> target that session (recompute from proof)
+        #   <existing-id> <slug>   -> force slug on that session
+        #   <plain-name>           -> label the CURRENT session
+        #   <unknown-id-shape>     -> FAIL CLOSED (the codex-id corruption guard)
         sid, forced = None, None
-        if rest and uuid_re.match(rest[0]):
-            sid = rest[0]
-            forced = rest[1] if len(rest) >= 2 else None
-        elif rest:
-            forced = rest[0]                      # a slug for the CURRENT session
+        if len(rest) == 2:
+            # arg1 is ALWAYS a session id — fail closed if absent (never relabel the
+            # CURRENT session; that non-existent-arg1 path was the corruption).
+            if not _sess_exists(rest[0]):
+                print(f"no session {rest[0][:8]}… in the vault — refusing (the "
+                      f"two-arg form targets an existing session id, never the "
+                      f"current one). Nothing changed.")
+                return
+            sid, forced = rest[0], rest[1]
+        elif len(rest) == 1:
+            if _sess_exists(rest[0]):
+                sid = rest[0]                     # target THAT session (recompute from proof)
+            elif _looks_like_session(rest[0]):
+                print(f"no session {rest[0][:8]}… in the vault — refusing (that "
+                      f"looks like a session id but none exists; to label the "
+                      f"CURRENT session pass a plain name, or use the two-arg "
+                      f"form). Nothing changed.")
+                return
+            else:
+                forced = rest[0]                  # a plain slug for the CURRENT session
         if not sid:
             sid = _os.environ.get("CLAUDE_SESSION_ID")
         if not sid:
             print("no session id — run inside the session (CLAUDE_SESSION_ID) or pass one:")
             print("  cairn account fix-session <session_id> [<slug>]")
             return
-        v = Vault()
         row = v.conn.execute(
             "SELECT account, account_locked FROM sessions WHERE id=?", (sid,)).fetchone()
         if not row:

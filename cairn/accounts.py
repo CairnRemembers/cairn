@@ -70,6 +70,31 @@ def maker_of(model_or_harness: str) -> str:
     return (fam[:1].upper() + fam[1:]) if fam else "Unknown"
 
 
+def maker_for_session(session_id: str) -> str:
+    """SESSION ID -> canonical maker, by session-id SHAPE (not model string).
+    maker_of() must NOT be fed a session id: a bare Claude UUID has no maker
+    token and would titlecase to garbage ('a1a1…' -> 'A1a1a1a1'). This resolver
+    keys off the id conventions Cairn actually stamps:
+      - codex-* / mcp-codex*                 -> GPT
+      - bare harness UUID (Claude Code sid)  -> Claude
+      - import-<src>-*                       -> maker_of(<src>), known makers only
+    Everything else (other mcp-<client> families, session-YYYY-* hand-opened ids,
+    blank) -> 'Unknown' — honest: never guess a maker we can't substantiate, so a
+    same-maker warning is only raised on a session whose maker is proven."""
+    sid = str(session_id or "")
+    if sid.startswith("codex-") or sid.startswith("mcp-codex"):
+        return "GPT"
+    if sid.startswith("import-"):
+        parts = sid.split("-")
+        m = maker_of(parts[1]) if len(parts) >= 2 else "Unknown"
+        return m if m in ("Claude", "GPT", "Gemini") else "Unknown"
+    # bare 36-char harness UUID == a Claude Code session (every other family is
+    # prefixed). Same loose check the rest of the codebase uses for uuids.
+    if len(sid) == 36 and all(c in "0123456789abcdefABCDEF-" for c in sid):
+        return "Claude"
+    return "Unknown"
+
+
 def _mask_email(e: str) -> str:
     if "@" not in (e or ""):
         return ""

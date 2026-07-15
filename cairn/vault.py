@@ -84,19 +84,25 @@ def _multi_account_machine(maker: str = "Claude") -> bool:
     seeded) counts as multi-account."""
     key = (maker or "").lower()
     n = 0
-    try:
-        from cairn.accounts import _desktop_store_roots
-        seen = set()
-        for root in _desktop_store_roots():
-            try:
-                for d in root.iterdir():
-                    if d.is_dir():
-                        seen.add(d.name)
-            except Exception:
-                pass
-        n = max(n, len(seen))   # Desktop claude-code-sessions folders are Claude accounts
-    except Exception:
-        pass
+    # Claude Desktop account folders are a CLAUDE-ONLY signal (_desktop_store_roots
+    # returns only Claude roots), so they must not inflate the count for GPT/Codex
+    # or any other maker — that cross-maker leak would false-positive a GPT session
+    # on a machine that merely has two Claude Desktop accounts. Only consult them
+    # when the question is about Claude.
+    if key == "claude":
+        try:
+            from cairn.accounts import _desktop_store_roots
+            seen = set()
+            for root in _desktop_store_roots():
+                try:
+                    for d in root.iterdir():
+                        if d.is_dir():
+                            seen.add(d.name)
+                except Exception:
+                    pass
+            n = max(n, len(seen))   # Desktop claude-code-sessions folders are Claude accounts
+        except Exception:
+            pass
     try:
         raw = json.loads((Path.home() / ".cairn" / "accounts.json").read_text(encoding="utf-8"))
         if isinstance(raw, dict):
@@ -152,11 +158,15 @@ def _resolve_account(session_id: str = "") -> "tuple[Optional[str], bool]":
             return d["slug"], True
     except Exception:
         pass
-    # 4. harness login-id — CLI OAuth / Codex auth. Codex (single-surface) or a
-    #    single-account machine is authoritative -> LOCK. But a multi-account
-    #    Claude machine has a single-slot ~/.claude.json that lags Desktop
-    #    account switching, so it may LABEL but must NOT LOCK (a stale label must
-    #    stay correctable by later Desktop proof / fix-session). Ids only.
+    # 4. harness login-id — CLI OAuth / Codex auth. SYMMETRIC across makers: a
+    #    SINGLE-account-for-this-maker machine is authoritative -> LOCK; a machine
+    #    with 2+ accounts of the same maker may LABEL but must NOT LOCK, because
+    #    the login file is single-slot and lags account switching (Claude's
+    #    ~/.claude.json lags Desktop; Codex's ~/.codex/auth.json is the same
+    #    single file shared by every OpenAI login). A stale label must stay
+    #    correctable by later proof / validated CAIRN_ACCOUNT / fix-session. This
+    #    is what lets the orient multi-account warning fire for an unlocked Codex
+    #    guess (it previously hard-locked every Codex identity). Ids only.
     try:
         from cairn.accounts import claude_identity, codex_identity, slug_register
         sid = str(session_id or "")
@@ -164,7 +174,7 @@ def _resolve_account(session_id: str = "") -> "tuple[Optional[str], bool]":
         ident = codex_identity() if is_codex else claude_identity()
         slug = slug_register(ident)
         if slug:
-            locked = True if is_codex else (not _multi_account_machine("Claude"))
+            locked = not _multi_account_machine("GPT" if is_codex else "Claude")
             return slug, locked
     except Exception:
         pass
@@ -189,6 +199,34 @@ def _live_account_locked(session_id: str = "") -> bool:
     A locked stamp is never silently overwritten by a later lower-confidence
     write; only fix-session/doctor (human) moves a locked label."""
     return _resolve_account(session_id)[1]
+
+
+def orient_account_warning(session_id: str = "") -> str:
+    """One-line multi-account ambiguity warning for orient output — or '' if the
+    session is unambiguous. Fires ONLY when BOTH hold for the REAL session:
+      (a) this session's maker has 2+ accounts on this machine, AND
+      (b) the resolved label is an unlocked GUESS (no validated CAIRN_ACCOUNT /
+          Desktop proof / channel route).
+    Both are required: gating on (b) alone would false-fire on the single-account
+    handle path (which is legitimately unlocked). Single-account users, and any
+    session whose maker can't be proven, never see it. Fully defensive — a resolver
+    hiccup returns '' so orient never breaks or nags wrongly."""
+    try:
+        from cairn.accounts import maker_for_session, galaxy_label
+        sid = str(session_id or "")
+        maker = maker_for_session(sid)
+        if maker not in ("Claude", "GPT", "Gemini"):
+            return ""                       # unproven maker -> never a false warning
+        if not _multi_account_machine(maker):
+            return ""
+        if _live_account_locked(sid):
+            return ""                       # a locked/proven label is not a guess
+        label = galaxy_label(_live_account(sid) or "")
+        return ("\n⚠ galaxy '" + label + "' is a best guess for this session "
+                "(2+ " + maker + " accounts here, no proof). Set CAIRN_ACCOUNT to be "
+                "sure, or check: cairn account doctor")
+    except Exception:
+        return ""
 
 
 def _live_harness(session_id: str = "") -> Optional[str]:
