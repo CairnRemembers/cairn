@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import glob as _glob
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,6 +88,79 @@ def _default_roots() -> list:
             seen.add(s)
             out.append(c)
     return out
+
+
+def _lp(p) -> str:
+    """Windows extended-length path so files whose path exceeds the ~260-char
+    MAX_PATH limit still enumerate and open. `\\\\?\\` for a drive-absolute path,
+    `\\\\?\\UNC\\` for a UNC share. No-op off Windows, on a relative path, or if
+    already prefixed. Deep Cowork subagent transcripts (320+ chars) silently
+    dropped from a plain glob/open without this — GitHub issue #1."""
+    s = os.fspath(p)
+    if sys.platform != "win32" or s.startswith("\\\\?\\") or not os.path.isabs(s):
+        return s
+    if s.startswith("\\\\"):                       # UNC \\server\share
+        return "\\\\?\\UNC\\" + s[2:]
+    return "\\\\?\\" + s
+
+
+_TX_MARK = os.sep + ".claude" + os.sep + "projects" + os.sep
+
+
+def _walk_transcripts(roots, on_error=None) -> list:
+    """Every capture file under the roots, long-path safe (os.walk over `_lp`
+    roots). Yields exactly TWO kinds and NOTHING else:
+      • Claude Code transcripts under …/.claude/projects/**/*.jsonl. An audit.jsonl
+        there is Claude-Code TELEMETRY → always excluded.
+      • the Desktop UI-chat audit.jsonl sitting DIRECTLY in a local_<id>/ dir
+        (never under a .claude/ subtree) — GitHub issue #1's missing source.
+    The UI audit.jsonl is a hybrid stream (real turns interleaved with HMAC-signed
+    telemetry: system / rate_limit_event / result records), but _iter_turns is an
+    allowlist BY CONSTRUCTION — it only reads message.content off type=user/
+    assistant records, so telemetry / cost / usage / _audit_hmac lines are never
+    read into a node. Discovery scope + record allowlist together keep telemetry out.
+    on_error(exc) is called for every directory os.walk cannot enumerate
+    (permission / path), so a skipped subtree is SURFACED, never silently dropped."""
+    out, seen = [], set()
+    for root in roots:
+        try:
+            walker = os.walk(_lp(root), onerror=on_error)
+        except Exception as e:
+            if on_error is not None:
+                on_error(e)
+            continue
+        for dirpath, _dirs, files in walker:
+            # strip the extended-length prefix for classification + storage, then
+            # _lp re-adds it at open time. UNC must round-trip through \\server\share,
+            # NOT lose its leading \\ (that would make the path non-absolute and the
+            # file silently un-openable — every UNC-home transcript would drop).
+            if dirpath.startswith("\\\\?\\UNC\\"):
+                clean = "\\\\" + dirpath[8:]        # \\?\UNC\server\share -> \\server\share
+            elif dirpath.startswith("\\\\?\\"):
+                clean = dirpath[4:]                 # \\?\C:\... -> C:\...
+            else:
+                clean = dirpath
+            in_projects = _TX_MARK in (clean + os.sep)
+            in_dotclaude = ((os.sep + ".claude" + os.sep) in (clean + os.sep)
+                            or clean.endswith(os.sep + ".claude"))
+            parent = os.path.basename(clean)
+            for fn in files:
+                if not fn.endswith(".jsonl"):
+                    continue
+                key = os.path.join(clean, fn)
+                if key in seen:
+                    continue
+                if fn == "audit.jsonl":
+                    # CONVERSATION audit.jsonl: directly inside a local_<id> dir,
+                    # never the Claude-Code telemetry audit.jsonl under .claude/.
+                    if parent.startswith("local_") and not in_dotclaude:
+                        seen.add(key)
+                        out.append(Path(key))
+                    continue
+                if in_projects:                    # ordinary Claude Code transcript
+                    seen.add(key)
+                    out.append(Path(key))
+    return sorted(out, key=lambda p: str(p))
 
 
 # ── state + diagnostics (mirror codex_reader) ─────────────────────────────────
@@ -190,7 +264,7 @@ def _iter_turns(path: Path):
         p_agent_ts = p_agent_uuid = p_model = None
 
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with open(_lp(str(path)), "r", encoding="utf-8", errors="replace") as f:
             for raw in f:
                 raw = raw.strip()
                 if not raw:
@@ -203,9 +277,17 @@ def _iter_turns(path: Path):
                 if not isinstance(rec, dict):
                     continue
                 if not session_id:
-                    sid = rec.get("sessionId")
+                    # audit.jsonl uses snake_case session_id; transcripts sessionId.
+                    sid = rec.get("sessionId") or rec.get("session_id")
                     if isinstance(sid, str) and sid:
                         session_id = sid
+                # audit.jsonl carries replayed / synthetic records that no human
+                # typed and the model didn't emit live — never real conversation.
+                # The real store uses camelCase (isSynthetic/isReplay); snake_case
+                # variants are guarded defensively against schema drift.
+                if (rec.get("isSynthetic") or rec.get("is_synthetic")
+                        or rec.get("isReplay") or rec.get("is_replay")):
+                    continue
                 rtype = rec.get("type")
                 if rtype == "user":
                     if not _is_real_user_turn(rec):
@@ -214,7 +296,7 @@ def _iter_turns(path: Path):
                         flush()                       # a new prompt closes the turn
                     msg = rec.get("message") or {}
                     p_user = _text_from_content(msg.get("content"))
-                    p_user_ts = rec.get("timestamp")
+                    p_user_ts = rec.get("timestamp") or rec.get("_audit_timestamp")
                     p_user_uuid = rec.get("uuid")
                 elif rtype == "assistant":
                     msg = rec.get("message") or {}
@@ -224,7 +306,7 @@ def _iter_turns(path: Path):
                     m = msg.get("model")
                     if isinstance(m, str) and m.strip():
                         p_model = m.strip()
-                    p_agent_ts = rec.get("timestamp")
+                    p_agent_ts = rec.get("timestamp") or rec.get("_audit_timestamp")
                     p_agent_uuid = rec.get("uuid")
                 # queue-operation / last-prompt / attachment / summary / system /
                 # file-history-snapshot / … are not turns → skip
@@ -257,7 +339,7 @@ def read_local_agent_sessions(root=None, vault: Optional[Vault] = None,
         "locked": bool(account), "files_scanned": 0, "threads_found": 0,
         "forward_turns": 0, "forward_new": 0, "forward_user": 0, "forward_agent": 0,
         "historical_turns": 0, "historical_new": 0, "already_captured": 0,
-        "bad_lines": 0, "truncated_files": 0, "dropped": 0,
+        "bad_lines": 0, "truncated_files": 0, "walk_errors": 0, "dropped": 0,
         "date_min": None, "date_max": None, "preview": None,
         "first_run": False, "provisional_watermark": False, "watermark": None,
         "applied": (not dry_run), "written_user": 0, "written_agent": 0,
@@ -266,14 +348,12 @@ def read_local_agent_sessions(root=None, vault: Optional[Vault] = None,
     if not roots:
         return report
 
-    # transcript files live under …/local_ditto_<id>/.claude/projects/**/*.jsonl.
-    # scope the glob to that shape so per-session audit.jsonl (and other stray
-    # jsonl) never get parsed as conversation.
-    files = []
-    for r in roots:
-        files += _glob.glob(
-            str(r / "**" / ".claude" / "projects" / "**" / "*.jsonl"), recursive=True)
-    files = sorted(f for f in files if Path(f).name != "audit.jsonl")
+    # Discover capture files long-path safe: Claude Code transcripts under
+    # …/.claude/projects/**/*.jsonl PLUS the Desktop UI-chat local_<id>/audit.jsonl,
+    # while the .claude/ telemetry audit.jsonl stays excluded (see _walk_transcripts).
+    def _walk_err(_e):
+        report["walk_errors"] += 1
+    files = _walk_transcripts(roots, on_error=_walk_err)
     report["files_scanned"] = len(files)
     if not files:
         return report

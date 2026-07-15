@@ -37,13 +37,13 @@ It prints, with a fix for each gap:
 - `⚠ / ✗` — do **only** these, using the exact command shown
 - `○` optional — ignore unless asked
 
-> **Known doctor gap — do not "fix" what isn't broken:** doctor's **MCP** line reads
-> Claude Desktop's config only. On a Codex-wired machine it can say *"MCP: not
-> found"* while Codex's `[mcp_servers.cairn]` works fine. Doctor may mention Codex
-> sessions it finds, but it does **not** verify the Codex MCP wire or the notify
-> hook — a Claude-side check, never a Codex-completion certificate. Verify Codex
-> with `codex mcp list` / `cairn codex-hook status` and move on — never rewrite
-> configs because of that one line.
+> **Reading doctor's MCP lines:** doctor reports MCP **per client** — **MCP (Claude
+> Desktop)** and **MCP (Codex)** are separate wires, each a check of that client's
+> own config. **MCP (Codex)** confirms `[mcp_servers.cairn]` is present in
+> `~/.codex/config.toml`; it does **not** prove the server launches (a wrong
+> interpreter still fails at spawn) and it is **not** the notify capture hook.
+> Verify those with `codex mcp list` and `cairn codex-hook status`. A missing line
+> for a client you don't use is normal — don't rewrite a working config over it.
 
 **If `doctor` says the vault is EMPTY:** you are either a fresh install (fine —
 just start capturing) **or a remote/cloud agent with no access to the user's real

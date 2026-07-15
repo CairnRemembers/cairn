@@ -158,10 +158,11 @@ vault returns an empty-but-valid digest — that's success. You now have all eig
 `cairn_orient`, `cairn_fetch`, `cairn_search`, `cairn_recent`, `cairn_read`,
 `cairn_logs`, `cairn_wander`, `cairn_note`.
 
-> **Don't judge this wire by `cairn doctor` (yet).** Doctor's MCP line currently
-> reads **Claude Desktop's** config only — on a Codex-wired machine it can print
-> *"MCP: not found in a known client config"* while Codex is working perfectly.
-> Trust the smoke test, `codex mcp list`, and `cairn codex-hook status` for Codex.
+> **What `cairn doctor` tells you here.** Doctor reports **MCP (Codex)** on its own
+> line — it confirms `[mcp_servers.cairn]` is present in your `~/.codex/config.toml`.
+> It does **not** prove the server launches (a wrong interpreter still fails) or that
+> the notify hook is installed, so still confirm with the smoke test, `codex mcp
+> list`, and `cairn codex-hook status`.
 
 ### 6b · Agentic capture  *(optional — off by default)*
 Wrap Codex's `notify` hook so notify-fired turns (agentic/computer-use turns and
@@ -271,13 +272,14 @@ python -X utf8 -m cairn import codex-sessions --apply    # write the new-going-f
   the numbers, then re-run with `--apply` (a reversible manifest is saved to `~/.cairn/`
   first; imported nodes are append-only and can be voided).
 - **Forward-only by default** — the first `--apply` sets a watermark, so existing
-  history stays on disk untouched. To also pull older chat, add `--include-before=YYYY-MM-DD`
-  — despite the name, this is a **lower bound**: it imports turns dated *on or after* that
-  date, up to the current watermark (not everything before it).
+  history stays on disk untouched. To also pull older chat, add `--history-from=YYYY-MM-DD`
+  — it imports turns dated *on or after* that date (a lower bound), up to the current
+  watermark. (`--include-before` is a backward-compatible alias for the same option,
+  kept despite its misleading name.)
 - **Windows long paths** — very deeply-nested session files can exceed the 260-char
-  path limit and fail to read; the import report counts them as truncated files. If a
-  thread you expect doesn't land, check that count (enabling Windows long-path
-  support also clears it).
+  path limit; Cairn uses extended-length paths so they still import. (A file that
+  still hits a read error mid-stream is counted as a truncated file — re-run to finish;
+  dedup makes that safe.)
 - **Attribution** — `--account=NAME` stamps + locks the account. The store has no
   per-record account id, so everything is attributed to one account: a second OpenAI
   login on the same machine can't be told apart (a documented known limit).
@@ -292,9 +294,9 @@ agentic events · `import codex-sessions` = full plain chat.
   `Scripts\python.exe`), then fully restart Codex.
 - **Tools don't show up?** Restart Codex (quit the desktop app fully, or open a
   new CLI thread) so it relaunches the MCP server after a config change.
-- **`cairn doctor` says "MCP: not found" but the tools work?** Known blind spot —
-  doctor's MCP check reads only Claude Desktop's config today, never
-  `~/.codex/config.toml`. Believe the smoke test / `codex mcp list`, not that line.
+- **`cairn doctor` shows "MCP (Codex): … no cairn server" but the tools work?** Its
+  Codex line reads `[mcp_servers.cairn]` from `~/.codex/config.toml` only — if the
+  server launches anyway, believe the smoke test / `codex mcp list` over that line.
 - **Garbled output / Unicode errors on Windows?** The `-X utf8` flag in `args` is
   what fixes it — make sure it's there.
 - **A turn asks for approval, or the tool call cancels itself?** Set
@@ -316,9 +318,10 @@ To back up Cairn, copy `~/.cairn/`. To move machines, copy it across. That's the
 ---
 
 ## If something's off
-1. **`cairn doctor`** — always first; it names exactly what's missing. *(Known gap:
-   its **MCP** line covers Claude Desktop only — for Codex trust `codex mcp list`
-   and `cairn codex-hook status`, per [§6a](#6a--tools-via-mcp).)*
+1. **`cairn doctor`** — always first; it names exactly what's missing. *(Its
+   **MCP (Codex)** line checks `[mcp_servers.cairn]` only — it doesn't prove the
+   server launches or the notify hook is installed; for those trust `codex mcp
+   list` and `cairn codex-hook status`, per [§6a](#6a--tools-via-mcp).)*
 2. **Garbled output on Windows?** Use `python -X utf8 -m cairn …`.
 3. **Dashboard won't load, or shows the old UI?** Restart it and **hard-refresh**
    the browser (`Ctrl+Shift+R`) — the page is served inline and caches hard.

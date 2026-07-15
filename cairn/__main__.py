@@ -1089,12 +1089,15 @@ def cmd_import_local_agent_sessions(args: list[str]) -> None:
 
     DRY-RUN by default. --apply writes (a reversible manifest is saved first).
     FORWARD-ONLY by default: a watermark set on first --apply splits history from
-    new-going-forward; backfill history with --include-before.
+    new-going-forward; backfill older history with --history-from=YYYY-MM-DD, which
+    imports turns dated ON OR AFTER that date (a floor). (--include-before is a
+    back-compat alias for the SAME floor — its name is misleading and kept only so
+    old scripts don't break.)
 
     Usage:
       python -m cairn import local-agent-sessions                  # dry-run preview
       python -m cairn import local-agent-sessions --apply          # write forward turns
-      python -m cairn import local-agent-sessions --include-before=2026-07-01 --apply
+      python -m cairn import local-agent-sessions --history-from=2026-07-01 --apply
       options: --root=PATH --account=name --since=YYYY-MM-DD --tier=2 --limit=N --debug
     """
     from cairn.local_agent_reader import read_local_agent_sessions
@@ -1108,7 +1111,8 @@ def cmd_import_local_agent_sessions(args: list[str]) -> None:
             root = arg.split("=", 1)[1].strip()
         elif arg.startswith("--account="):
             account = arg.split("=", 1)[1].strip()
-        elif arg.startswith("--include-before="):
+        elif (arg.startswith("--history-from=")        # honest name: a date FLOOR
+              or arg.startswith("--include-before=")):  # back-compat alias (misleading name)
             include_before = arg.split("=", 1)[1].strip()
         elif arg.startswith("--since="):
             since = arg.split("=", 1)[1].strip()
@@ -1136,10 +1140,10 @@ def cmd_import_local_agent_sessions(args: list[str]) -> None:
     print(f"  threads: {r['threads_found']} session(s)   span: {span}")
     print(f"\n  NEW GOING FORWARD (imports on --apply): {r['forward_new']} turns "
           f"({r['forward_user']} user / {r['forward_agent']} agent)")
-    print(f"  HISTORY ON DISK (NOT imported unless --include-before): "
+    print(f"  HISTORY ON DISK (NOT imported unless --history-from): "
           f"{r['historical_turns']} turns")
     if include_before:
-        print(f"    → --include-before={include_before}: {r['historical_new']} historical "
+        print(f"    → --history-from={include_before}: {r['historical_new']} historical "
               f"turns WILL import on --apply")
     print(f"  already captured (turn:<id> present): {r['already_captured']} — skipped")
     if r["bad_lines"] or r["dropped"]:
@@ -1148,17 +1152,20 @@ def cmd_import_local_agent_sessions(args: list[str]) -> None:
     if r.get("truncated_files"):
         print(f"  ⚠ {r['truncated_files']} file(s) hit a read error mid-file — re-run to "
               f"finish (dedup makes it safe).")
+    if r.get("walk_errors"):
+        print(f"  ⚠ {r['walk_errors']} folder(s) could not be listed (permissions/path) — "
+              f"some transcripts may be missing; check access and re-run.")
     if r["preview"]:
         p = r["preview"]
         print(f"  preview turn {p['turn_id']}:  user \"{p['user']}\"  ->  agent \"{p['agent']}\"")
     if r["first_run"] and r["provisional_watermark"]:
         print("\n  NOTE: first import on this machine — the forward watermark is set to NOW on"
               "\n        --apply; existing history stays on disk untouched unless you pass"
-              "\n        --include-before=YYYY-MM-DD.")
+              "\n        --history-from=YYYY-MM-DD.")
     if not apply:
         print("\n  DRY-RUN — nothing changed. Re-run with --apply to write the NEW-going-forward"
               "\n  set (a reversible manifest is saved to ~/.cairn/ first). Backfill history with"
-              "\n  --include-before=YYYY-MM-DD.")
+              "\n  --history-from=YYYY-MM-DD.")
         return
     print(f"\n  APPLIED: {r['written_nodes']} nodes written "
           f"({r['written_user']} user / {r['written_agent']} agent) "
@@ -1183,13 +1190,15 @@ def cmd_import_codex_sessions(args: list[str]) -> None:
     DRY-RUN by default — prints scope/counts, changes nothing. --apply writes (a
     reversible manifest is saved to ~/.cairn/ first). FORWARD-ONLY by default: a
     watermark set on first --apply separates history-on-disk from new-going-forward;
-    historical backfill is an explicit --include-before opt-in.
+    historical backfill is an explicit --history-from=YYYY-MM-DD opt-in (imports turns
+    dated ON OR AFTER that date — a floor; --include-before is a back-compat alias for
+    the SAME floor, kept despite its misleading name so old scripts don't break).
 
     Usage:
       python -m cairn import codex-sessions                  # dry-run preview
       python -m cairn import codex-sessions --apply          # write forward turns
       python -m cairn import codex-sessions --account=name   # stamp + lock account
-      python -m cairn import codex-sessions --include-before=2026-07-01 --apply
+      python -m cairn import codex-sessions --history-from=2026-07-01 --apply
       options: --root=PATH --since=YYYY-MM-DD --tier=2 --limit=N --debug
     """
     from cairn.codex_reader import read_codex_sessions
@@ -1203,7 +1212,8 @@ def cmd_import_codex_sessions(args: list[str]) -> None:
             root = arg.split("=", 1)[1].strip()
         elif arg.startswith("--account="):
             account = arg.split("=", 1)[1].strip()
-        elif arg.startswith("--include-before="):
+        elif (arg.startswith("--history-from=")        # honest name: a date FLOOR
+              or arg.startswith("--include-before=")):  # back-compat alias (misleading name)
             include_before = arg.split("=", 1)[1].strip()
         elif arg.startswith("--since="):
             since = arg.split("=", 1)[1].strip()
@@ -1237,10 +1247,10 @@ def cmd_import_codex_sessions(args: list[str]) -> None:
           f"across {r['forward_threads']} threads")
     hist_span = (f"{(r['hist_min'] or '?')[:16]} .. {(r['hist_max'] or '?')[:16]}"
                  if r["historical_turns"] else "—")
-    print(f"  HISTORY ON DISK (backfill — NOT imported unless --include-before): "
+    print(f"  HISTORY ON DISK (backfill — NOT imported unless --history-from): "
           f"{r['historical_turns']} turns, {hist_span}")
     if include_before:
-        print(f"    → --include-before={include_before}: {r['historical_new']} historical "
+        print(f"    → --history-from={include_before}: {r['historical_new']} historical "
               f"turns WILL import on --apply")
     print(f"  already captured (turn:<id> present, e.g. by the notify hook): "
           f"{r['already_captured']} turns — skipped")
@@ -1260,12 +1270,12 @@ def cmd_import_codex_sessions(args: list[str]) -> None:
     if r["first_run"] and r["provisional_watermark"]:
         print("\n  NOTE: first import on this machine — the forward watermark is set to NOW on"
               "\n        --apply, so existing history stays on disk untouched unless you pass"
-              "\n        --include-before=YYYY-MM-DD.")
+              "\n        --history-from=YYYY-MM-DD.")
 
     if not apply:
         print("\n  DRY-RUN — nothing changed. Re-run with --apply to write the NEW-going-forward"
               "\n  set (a reversible manifest is saved to ~/.cairn/ first). Backfill history with"
-              "\n  --include-before=YYYY-MM-DD.")
+              "\n  --history-from=YYYY-MM-DD.")
         print("  KNOWN LIMIT: one account only — the store has no per-record account id, so a"
               "\n  second OpenAI login on this machine can't be told apart (all → one account).")
         return
@@ -2064,7 +2074,11 @@ def cmd_doctor(args: list[str]) -> None:
     except Exception as e:
         line(BAD, "vault", f"could not open (~/.cairn/cairn.db): {e}")
 
-    # MCP registration (best-effort, platform-specific)
+    # MCP registration — reported PER CLIENT. The Claude Desktop config and Codex's
+    # config.toml are SEPARATE wires; doctor used to read only the former and falsely
+    # told Codex users "MCP: not found" (GitHub issue #2). Neither line is a verdict
+    # on the OTHER client, and neither is the notify hook (see `cairn codex-hook status`).
+    mcp_seen = False
     try:
         if sys.platform == "win32":
             cfg = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude_desktop_config.json"
@@ -2072,13 +2086,48 @@ def cmd_doctor(args: list[str]) -> None:
             cfg = Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
         else:
             cfg = Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
-        if cfg.exists() and "cairn" in cfg.read_text(encoding="utf-8", errors="ignore"):
-            line(OK, "MCP", "registered in Claude Desktop config")
-        else:
-            line(OPT, "MCP", "not found in a known client config (optional)",
-                 'add an MCP server: {"command":"python","args":["-m","cairn","mcp"]}')
+        if cfg.exists():
+            mcp_seen = True
+            if "cairn" in cfg.read_text(encoding="utf-8", errors="ignore"):
+                line(OK, "MCP (Claude Desktop)", "registered in claude_desktop_config.json")
+            else:
+                line(OPT, "MCP (Claude Desktop)", "config present, no cairn server (optional)",
+                     'add an MCP server: {"command":"python","args":["-X","utf8","-m","cairn","mcp"]}')
+        # Desktop config absent → not a Desktop user → stay silent (no false negative).
     except Exception:
-        line(OPT, "MCP", "could not check client config")
+        mcp_seen = True
+        line(OPT, "MCP (Claude Desktop)", "could not check client config")
+
+    # Codex MCP wire — a distinct registration in ~/.codex/config.toml under
+    # [mcp_servers.cairn]. Read-only (tomllib), scoped to the cairn KEY (never a bare
+    # 'cairn' substring across the file, and never the separate `notify` array).
+    try:
+        codex_conf = _codex_conf_path()
+        if codex_conf.exists():
+            mcp_seen = True
+            import tomllib
+            try:
+                _cx = tomllib.loads(codex_conf.read_text(encoding="utf-8", errors="ignore"))
+            except Exception:
+                _cx = {}
+            servers = _cx.get("mcp_servers")
+            entry = servers.get("cairn") if isinstance(servers, dict) else None
+            if isinstance(entry, dict) and (entry.get("command") or entry.get("args")):
+                line(OK, "MCP (Codex)", "registered in ~/.codex/config.toml [mcp_servers.cairn]")
+            elif isinstance(entry, dict):
+                line(OPT, "MCP (Codex)", "[mcp_servers.cairn] present but has no command/args (optional)",
+                     'set command=<venv python> args=["-X","utf8","-m","cairn","mcp"]')
+            else:
+                line(OPT, "MCP (Codex)", "no [mcp_servers.cairn] in ~/.codex/config.toml (optional)",
+                     'add [mcp_servers.cairn] command=<venv python> args=["-X","utf8","-m","cairn","mcp"]')
+        # no ~/.codex/config.toml → not a Codex user → stay silent.
+    except Exception:
+        mcp_seen = True
+        line(OPT, "MCP (Codex)", "could not read ~/.codex/config.toml")
+
+    if not mcp_seen:
+        line(OPT, "MCP", "not wired in a known client yet (optional)",
+             "point Claude Desktop or Codex at `python -X utf8 -m cairn mcp` (see QUICKSTART)")
 
     # capture scope (cairn connect) — off / per-project / global, mutually exclusive
     try:
