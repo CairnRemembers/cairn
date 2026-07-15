@@ -39,9 +39,11 @@ It prints, with a fix for each gap:
 
 > **Known doctor gap — do not "fix" what isn't broken:** doctor's **MCP** line reads
 > Claude Desktop's config only. On a Codex-wired machine it can say *"MCP: not
-> found"* while Codex's `[mcp_servers.cairn]` works fine. Verify Codex with
-> `codex mcp list` / `cairn codex-hook status` and move on — never rewrite configs
-> because of that one line.
+> found"* while Codex's `[mcp_servers.cairn]` works fine. Doctor may mention Codex
+> sessions it finds, but it does **not** verify the Codex MCP wire or the notify
+> hook — a Claude-side check, never a Codex-completion certificate. Verify Codex
+> with `codex mcp list` / `cairn codex-hook status` and move on — never rewrite
+> configs because of that one line.
 
 **If `doctor` says the vault is EMPTY:** you are either a fresh install (fine —
 just start capturing) **or a remote/cloud agent with no access to the user's real
@@ -75,6 +77,20 @@ per-harness commands** — `connect --global` is Claude-only and does *not* cove
 - **Tell them how to undo it:** `cairn disconnect --global` / `cairn codex-hook uninstall`
   turns it off; `cairn capture off` pauses without disconnecting; `cairn setup` reviews anytime.
 
+**Capture is one wire; tools are the other.** `setup` wires *capture*. For an AI to
+search and note the vault from **inside the chat** (the `cairn_*` tools), each client
+has its own one-time wire — full walk-throughs in [QUICKSTART.md](QUICKSTART.md):
+
+- **Claude Code:** `claude mcp add --scope user cairn -- <full-path-to-python> -X utf8 -m cairn mcp`
+  — use the interpreter that can `import cairn`; a bare `python` that can't is the
+  #1 failure ([proof one-liner in QUICKSTART §6a](QUICKSTART.md#6a--tools-via-mcp)).
+- **Codex:** the `[mcp_servers.cairn]` block in `~/.codex/config.toml`, plus the memory
+  protocol in `~/.codex/AGENTS.md` — **append to an existing AGENTS.md; never replace
+  what's there** ([QUICKSTART §6](QUICKSTART.md#6--use-cairn-from-codex)).
+- **Claude Desktop / Cursor / any MCP client:** an MCP entry in that client's own
+  config pointing at `python -X utf8 -m cairn mcp` (the MCP-client note in
+  [QUICKSTART.md](QUICKSTART.md)).
+
 ## Step 3 — at the start of every session
 
 ```
@@ -100,7 +116,7 @@ first `note`.
 **Say which model you are.** Claude Code and Codex detect their own model
 automatically. In any other runtime — a local model, or one reached over MCP —
 set `CAIRN_MODEL` (e.g. `export CAIRN_MODEL="llama3-70b"`) so your notes are credited
-to you.
+to you. Skip it and they still save, just attributed to "unknown" instead of you.
 
 ## Step 4 — capture as you work (this is the point)
 
@@ -112,6 +128,7 @@ to you.
 
 Write a node when the **state of the work changes** — a decision made, an option
 rejected and why, a problem found, something learned, the user stating what they want.
+Capture the *path*, not just the destination.
 
 ```
 python -m cairn note --kind=decision  "chose X over Y because Z"
@@ -145,8 +162,11 @@ stamps it automatically. Your job is to **not corrupt that**:
   Then, and only then:
 
 ```
-python -m cairn account fix-session "My Work Claude"   # forces + locks THIS session, reversible
-python -m cairn account rename <key> "My Work Claude"   # renames a galaxy's display label only
+python -m cairn account doctor                            # read-only — prints the exact
+                                                          #   fix-session command per provable mismatch
+python -m cairn account fix-session <session-id> <slug>   # repair ONE named session (backed up, then LOCKED)
+python -m cairn account fix-session <slug>                # same, for the CURRENT session only
+python -m cairn account rename <key> "My Work Claude"     # renames a galaxy's display label only
 ```
 
 - **Watch-outs on a multi-account machine:** a stale `CAIRN_ACCOUNT` env var, or a

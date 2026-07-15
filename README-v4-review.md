@@ -1,3 +1,6 @@
+> **REVIEW ARTIFACT — proposed README vNext (v4.1).** Not the live README. Staged for
+> line-by-line audit against the shipped code; replaces nothing until approved.
+
 # Cairn
 
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
@@ -42,7 +45,7 @@ can find again, across sessions and across model generations.
 ## Quick start
 
 > **Two places, never mixed up:**
-> 🖥️ **Your terminal** (PowerShell / Terminal) — every command on this page is typed here, on your computer. Wiring is always a terminal command or a config-file edit — **never typed into an AI chat.**
+> 🖥️ **Your terminal** (PowerShell / Terminal) — every command on this page runs here, on your computer. Wiring is always a terminal command or a config-file edit — an AI can run those terminal steps *for* you (that's the fastest path below), but wiring is never something you paste into the chat box.
 > 💬 **The AI chat** — where memory shows up, and where you *test* the wiring by asking the AI to use it.
 
 ### Fastest — let your AI do it
@@ -99,9 +102,11 @@ inside that repo instead (global and per-project are mutually exclusive — `doc
 and 🖥️ `python -X utf8 -m cairn doctor` shows **✓ capture**.
 
 *Optional — native tools:* Claude Code can already read the vault by running `cairn`
-commands in its shell. For native `cairn_*` tools instead, register the MCP server:
+commands in its shell. For native `cairn_*` tools instead, register the MCP server
+user-wide, pointing at the Python that can `import cairn` (a bare `python` that can't
+is the #1 failure — [prove the path first, QUICKSTART §6a](QUICKSTART.md#6a--tools-via-mcp)):
 ```bash
-claude mcp add cairn -- python -X utf8 -m cairn mcp
+claude mcp add --scope user cairn -- <full-path-to-python> -X utf8 -m cairn mcp
 ```
 💬 Proof: ask the chat to *"call cairn_orient"*. *(`doctor` can't see this wire — the ask is the test.)*
 
@@ -126,7 +131,8 @@ default_tools_approval_mode = "approve"
 ✅ **Done when:** 🖥️ `python -X utf8 -m cairn codex-hook status` prints **INSTALLED**,
 and 💬 a Codex chat answers *"call cairn_orient"* with a digest (with piece 3, its first
 reply starts `[cairn: oriented — N]`).
-⚠️ *Honest note:* `cairn doctor` can't see either Codex wire yet — the checks above are the real proof.
+⚠️ *Honest note:* `cairn doctor` verifies neither Codex wire yet — it may mention Codex
+sessions it finds, but it is not a Codex-completion certificate. The checks above are the real proof.
 
 ### Claude Desktop / Cursor — one paste
 📄 Add to `claude_desktop_config.json` (or Cursor's MCP settings), then restart the app:
@@ -147,9 +153,9 @@ surfaces have **no ambient capture**; what you ask the AI to `cairn_note` is wha
 ---
 
 **Applies to every AI above:**
-- **Wiring is one-time and machine-wide.** New chats just remember — you never activate per chat. `orient` *reads* memory; it never switches anything on.
-- **Only NEW chats pick up new wiring** — finish wiring, then open a fresh chat.
-- **Privacy controls:** skip one chat: `set CAIRN_CAPTURE=0` in that shell · pause everywhere: `cairn capture off` / `on` · secrets scrubbed before write (append-only, fail-closed).
+- **Wiring is one-time.** New chats just remember — you never activate per chat. `orient` *reads* memory; it never switches anything on. Scope varies by wire: Claude Code hooks are machine-wide (or one project via `cairn connect`); Desktop/Cursor and Codex live in each app's own config, per account.
+- **Only NEW chats pick up new wiring** — finish wiring, then open a fresh chat. (Long-lived MCP clients re-read the tools only on a full restart.)
+- **Privacy controls:** skip one chat — `CAIRN_CAPTURE=0` in that shell (PowerShell `$env:CAIRN_CAPTURE="0"` · cmd `set CAIRN_CAPTURE=0` · bash `export CAIRN_CAPTURE=0`) · pause everywhere: `cairn capture off` / `on` · secrets scrubbed before write (append-only, fail-closed).
 - **Undo:** `cairn disconnect [--global]` · `cairn codex-hook uninstall` · re-run `cairn setup` to review.
 
 ---
@@ -159,7 +165,8 @@ surfaces have **no ambient capture**; what you ask the AI to `cairn_note` is wha
 - **One vault, every model.** Any agent that speaks MCP or can run `cairn` reads and writes the same memory — so one agent builds on what another wrote, even across rival vendors.
 - **Keep your place across a usage cap.** Hit a limit on one model, continue on another, and point it at where you left off — the trail is in the vault, not in one model's context.
 - **Captured as you work** — decisions, dead ends, tool calls, and turns become searchable nodes, from the moment you wire it.
-- **A nightly local pass** — embed → consolidate → prune → rebuild the graph → compile — runs on your machine, no network.
+- **Nothing worth keeping disappears.** Every captured turn keeps its complete text: search results are gists — an index — and `cairn read <id>` (MCP: `cairn_read`) returns any node in full.
+- **A local maintenance pass you run** — `cairn sleep`, nightly by habit or on your own scheduler (it doesn't schedule itself): embed → consolidate → prune → rebuild the graph → compile, all on your machine. One exception to "no network": the very first embed downloads the ~80 MB model, once.
 - **A map of your thinking** — the dashboard galaxy (`cairn dashboard` → http://127.0.0.1:7331), plus a human-readable Hub / Book / Index.
 - **Backfill** — distill old conversations into sharp, connected `claim` nodes.
 
@@ -206,7 +213,8 @@ Cairn can't always *prove* which one is active. The rule that keeps it clean:
 
 ```bash
 # Claude Code — launch each account with its label:
-CAIRN_ACCOUNT=work claude          # or set it in that environment's profile
+export CAIRN_ACCOUNT=work && claude        # bash/zsh (or set it in that profile)
+#   PowerShell: $env:CAIRN_ACCOUNT="work"; claude
 # Codex — put it in that account's ~/.codex/config.toml:
 #   [mcp_servers.cairn]  env = { CAIRN_ACCOUNT = "work" }
 # Importing old history? Always pass the flag:
@@ -217,8 +225,9 @@ Name and manage them anytime:
 ```bash
 cairn account                          # list galaxies + node counts
 cairn account rename <key> "Company"   # display label only — never merges or deletes
-cairn account doctor                   # read-only attribution check (Claude Desktop proof)
-cairn account fix-session <label>      # re-file one session, backed up, nodes untouched
+cairn account doctor                   # read-only check — prints the exact fix command per mismatch
+cairn account fix-session <session-id> <slug>   # re-file ONE named session (backed up, then locked)
+cairn account fix-session <slug>                # same, for the current session only
 ```
 
 **Honest limits** — so you're never surprised:
@@ -236,7 +245,7 @@ One folder: your vault at **`~/.cairn/`** (that's `cairn.db` — your actual mem
 
 ## Common commands
 
-`orient` · `note` · `fetch` · `wander` · `search` · `dashboard` · `doctor` · `setup` · `connect` / `disconnect` / `capture` · `account` · `backfill` · `sleep` (nightly cycle) · `edges` · `book` · `import`
+`orient` · `note` · `fetch` · `wander` · `search` · `read` (any node in full) · `dashboard` · `doctor` · `setup` · `connect` / `disconnect` / `capture` · `account` · `backfill` · `sleep` (the maintenance cycle — you run it) · `edges` · `book` · `import`
 
 Full reference with every option: [QUICKSTART.md](QUICKSTART.md).
 

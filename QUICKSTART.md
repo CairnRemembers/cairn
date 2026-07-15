@@ -76,7 +76,8 @@ cairn note --kind=decision "chose SQLite over Postgres — local-first, zero ops
 cairn fetch "what did I decide about the database"
 ```
 `fetch` is token-budgeted recall; `cairn wander "<topic>"` walks the weak ties for
-serendipity.
+serendipity. Everything list-like returns **gists** — an index, not the text; print any
+node in full with `cairn read <id>` (add `--max-chars=N` to dial depth).
 
 ---
 
@@ -99,7 +100,8 @@ doctor` flags a conflict. Reverse anytime: `cairn disconnect [--global]`.
 > install` (or let `cairn setup` do both). `connect --global` does not capture Codex.
 
 **Privacy controls** — not every chat belongs in your brain:
-- Skip one chat: `set CAIRN_CAPTURE=0` in that shell.
+- Skip one chat — set `CAIRN_CAPTURE=0` in that shell before launching:
+  PowerShell `$env:CAIRN_CAPTURE="0"` · cmd `set CAIRN_CAPTURE=0` · bash/zsh `export CAIRN_CAPTURE=0`.
 - Pause everywhere: `cairn capture off` (resume: `cairn capture on`).
 - Secrets are scrubbed before write (append-only, fail-closed).
 
@@ -188,7 +190,8 @@ python -X utf8 -m cairn codex-hook install
 ### 6c · The `AGENTS.md` protocol
 A global `~/.codex/AGENTS.md` makes Codex orient at session start, fetch before
 answering personal/history questions, and write salience notes tagged `codex`.
-Create the file and paste this in:
+Create the file if it doesn't exist; **if it does, append this block to the end —
+never replace what's already there** (your other global rules live in it too):
 
 ```markdown
 # Cairn memory protocol — MANDATORY in every session
