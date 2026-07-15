@@ -3044,6 +3044,16 @@ def cmd_account(args: list[str]) -> None:
             "UPDATE sessions SET account=?, account_locked=1 WHERE id=?", (new_acct, sid))
         v.conn.commit()
         print(f"session {sid[:8]}…: {old_acct!r} -> {new_acct!r}  (LOCKED; node content untouched)")
+        if new_acct != old_acct:
+            # the account (galaxy) changed → realign the derived atlas so the two
+            # galaxies don't keep sharing stale single-layout coordinates. Derived
+            # data only (map_x/map_y); node content is never touched.
+            try:
+                from cairn.edges import compute_atlas
+                compute_atlas(v)
+                print("  · realigned the galaxy map to the corrected account.")
+            except Exception:
+                print("  · could not auto-realign the map — run: cairn atlas")
         return
 
     if sub == "backfill":
@@ -3111,6 +3121,13 @@ def cmd_account(args: list[str]) -> None:
         v.conn.commit()
         print(f"\n  APPLIED: {len(repair)} repaired, {n} rows locked. backup: {bak.name}")
         print("  node content untouched. uncovered/ambiguous rows left unlocked & correctable.")
+        if repair:                          # accounts actually changed → realign galaxies
+            try:
+                from cairn.edges import compute_atlas
+                compute_atlas(v)
+                print("  · realigned the galaxy map to the corrected accounts.")
+            except Exception:
+                print("  · could not auto-realign the map — run: cairn atlas")
         return
 
     # default: list
@@ -3138,6 +3155,18 @@ def cmd_account(args: list[str]) -> None:
         maker = e.get("maker") or maker_of(slug)
         print(f"  {maker} · {e.get('label') or galaxy_label(slug)}   (key {slug}, 0 nodes)")
     print("\nrename a display name:  cairn account rename <key> <new name>")
+
+
+def cmd_atlas(args: list[str]) -> None:
+    """Recompute ONLY the atlas coordinates (nodes.map_x/map_y) — the light, fast
+    galaxy realign, without rebuilding semantic edges or communities. Use it when
+    galaxies overlap after an account is added or reassigned; `cairn edges` and the
+    nightly `cairn sleep` also do this as part of the full pass. Derived data only —
+    node content is never touched."""
+    from cairn.edges import compute_atlas
+    n = compute_atlas(Vault())
+    print(f"atlas: realigned {n} node position(s). Reload the dashboard "
+          "(Ctrl+Shift+R); an open Galaxy view refreshes on its own within ~25s.")
 
 
 COMMANDS = {
@@ -3172,6 +3201,7 @@ COMMANDS = {
     "doc":         cmd_doc,
     "lessons":     cmd_lessons,
     "edges":       cmd_edges,
+    "atlas":       cmd_atlas,
     "sleep":       cmd_sleep,
     "audit":       cmd_audit,
     "import":      cmd_import,
@@ -3217,6 +3247,7 @@ def main():
         print("  read   <node_id>   print node(s) IN FULL — complete stored text (gists live in query/fetch/logs)")
         print("  chain  <node_id>   show the reasoning chain (parent path, 60-char hops) — full text: `read`")
         print("  edges              rebuild the typed edge graph + topic communities")
+        print("  atlas              recompute ONLY galaxy coordinates (fast realign after an account change)")
         print("  compile            generate PROTOCOL.md now")
         print("  schedule           golden-angle context manifest (--render for full output)")
         print("  book               regenerate the Book (BOOK.md contents + volumes)")

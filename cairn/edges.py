@@ -708,9 +708,20 @@ def compute_atlas(vault: Optional[Vault] = None) -> int:
             for x, y, i in laid[k][0]:
                 pos.append((round(x + gx, 2), round(y + gy, 2), i))
 
+    # Ensure atlas_meta exists OUTSIDE the coords transaction — DDL implicitly
+    # commits the open transaction on Python < 3.12, which would split the UPDATE
+    # from the rev bump. Keeping the `with` block pure-DML makes them atomic on all
+    # versions (the table also gets created in the multi-galaxy branch above; both
+    # are IF NOT EXISTS, so this is a harmless no-op when it already exists).
+    v.conn.execute("CREATE TABLE IF NOT EXISTS atlas_meta (k TEXT PRIMARY KEY, v REAL)")
     with v.conn:
         v.conn.executemany(
             "UPDATE nodes SET map_x = ?, map_y = ? WHERE id = ?", pos)
+        # Bump a monotonic atlas revision so an already-open dashboard can tell a
+        # COORDINATE-ONLY rebuild happened even when node/edge counts are unchanged
+        # (e.g. after an account was reassigned and the galaxies re-separated).
+        v.conn.execute("INSERT INTO atlas_meta(k, v) VALUES('rev', 1) "
+                       "ON CONFLICT(k) DO UPDATE SET v = v + 1")
     return len(pos)
 
 

@@ -413,7 +413,15 @@ def run_dashboard(port: int = 7331, session_id: str | None = None,
         edges += [[r["src"], r["dst"], "d"]
                   for r in vault.conn.execute(
                       "SELECT src, dst FROM edges WHERE type='dendrite'")]
-        return {"nodes": nodes, "labels": labels, "edges": edges}
+        # atlas revision — lets an open dashboard notice a coordinate-only rebuild
+        # (same node/edge counts, new map_x/map_y) instead of skipping the refresh.
+        try:
+            _revrow = vault.conn.execute(
+                "SELECT v FROM atlas_meta WHERE k='rev'").fetchone()
+            _rev = _revrow["v"] if _revrow else 0
+        except Exception:
+            _rev = 0
+        return {"nodes": nodes, "labels": labels, "edges": edges, "rev": _rev}
 
     @app.get("/api/graph_search")
     def api_graph_search(q: str = "", k: int = 12):
@@ -2114,7 +2122,8 @@ function atlasStartPolling() {
     catch (e) { return; }                 // poll failed — keep old data
     if (!fresh || !Array.isArray(fresh.nodes)) return;
     if (fresh.nodes.length === atlasData.nodes.length &&
-        (fresh.edges || []).length === (atlasData.edges || []).length) return;  // nothing new
+        (fresh.edges || []).length === (atlasData.edges || []).length &&
+        (fresh.rev == null || fresh.rev === atlasData.rev)) return;  // nothing new (incl. coord-only rebuilds)
     atlasData = fresh;
     atlasPosCache = {};                    // rings/free recompute t0/t1 + reflow
     atlasAdj = null;                       // neural adjacency rebuilds from the new edges
