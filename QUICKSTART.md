@@ -44,7 +44,9 @@ pip install -e ".[all]"      # the package + embedder + dashboard
 ```
 Lighter builds: `".[embeddings]"` (no dashboard) · `".[dashboard]"` (no embedder).
 
-Your **vault auto-creates** at `~/.cairn/` on first run. No account, no cloud, no sign-in.
+Your **vault auto-creates** at `~/.cairn/` on first run — no cloud, no sign-in. Cairn
+separates each AI login into its own local **galaxy**; it reads the login you already
+have (nothing to register).
 
 ---
 
@@ -83,32 +85,42 @@ Let Cairn capture as you work with an AI, instead of noting everything by hand:
 
 | Scope | Command | Captures |
 |---|---|---|
+| **🌍 Everywhere** *(recommended)* | `cairn connect --global` | every Claude Code chat on this machine |
+| **This project** | `cairn connect` | every Claude Code chat in this repo |
 | **Off** (default) | — | only what you `cairn note` |
-| **This project** | `cairn connect` | every chat in this repo |
-| **Everywhere** | `cairn connect --global` | every Claude Code chat on this machine |
 
-A connected session **auto-orients** at the start, **records as it works** — the
-conversation *and* the tools it runs, grouped under each turn — and **compiles +
-embeds** at the end. Per-project and global are mutually exclusive; `cairn doctor`
-flags a conflict. Reverse anytime: `cairn disconnect [--global]`.
+Most people want **Everywhere** — one command, every chat, nothing to repeat (`cairn
+setup` picks it for you). A connected session **auto-orients** at the start, **records
+as it works** — the conversation *and* the tools it runs, grouped under each turn — and
+**compiles + embeds** at the end. Per-project and global are mutually exclusive; `cairn
+doctor` flags a conflict. Reverse anytime: `cairn disconnect [--global]`.
+
+> **This scope is Claude Code only.** Codex has its own switch — `cairn codex-hook
+> install` (or let `cairn setup` do both). `connect --global` does not capture Codex.
 
 **Privacy controls** — not every chat belongs in your brain:
 - Skip one chat: `set CAIRN_CAPTURE=0` in that shell.
 - Pause everywhere: `cairn capture off` (resume: `cairn capture on`).
 - Secrets are scrubbed before write (append-only, fail-closed).
 
-> Using **Claude Desktop / Cursor / any MCP client**? Point it at `python -m cairn mcp`
-> and you get all eight as native tools — `cairn_orient / fetch / search / recent /
-> read / logs / wander / note` — see the [README](README.md#connect-it-to-your-ai-assistant) for
-> the config block. Using **OpenAI Codex**? See [§6](#6--use-cairn-from-codex).
+> Using **Claude Desktop / Cursor / any MCP client**? Point your client's MCP config
+> at `python -m cairn mcp` — command = the Python your install used, args =
+> `-X utf8 -m cairn mcp` — and you get all eight as native tools — `cairn_orient /
+> fetch / search / recent / read / logs / wander / note`. Same shape as the Codex
+> block in [§6a](#6a--tools-via-mcp), adapted to your client's config format.
+> Using **OpenAI Codex**? See [§6](#6--use-cairn-from-codex).
 
 ---
 
-## 6 · Use Cairn from Codex  *(optional)*
-**OpenAI Codex** (desktop app + CLI) gets the vault three ways: the eight tools over
-MCP, optional agentic capture of notify-fired turns (agentic events + filtered helper
-calls, **not** plain chat), and a protocol file that makes Codex use memory without
-being asked. All three are opt-in.
+## 6 · Use Cairn from Codex
+**OpenAI Codex** (desktop app + CLI) connects to the vault **four separate ways** —
+each opt-in, each independent (wiring one does not wire the others):
+
+1. **Tools over MCP** (§6a) — the eight `cairn_*` tools, native in Codex.
+2. **Agentic capture** (§6b) — the `notify` hook records agentic/notify-fired turns
+   (**not** plain chat).
+3. **The `AGENTS.md` protocol** (§6c) — makes Codex *use* memory without being asked.
+4. **Plain-chat import** (§6d) — `import codex-sessions` files your conversational chat.
 
 ### 6a · Tools via MCP
 Add this to `~/.codex/config.toml`:
@@ -123,8 +135,15 @@ default_tools_approval_mode = "approve"
 ```
 
 - `<full-path-to-python>` — the interpreter that can `import cairn` (the one your
-  install used). On Windows use forward slashes or escaped backslashes inside the
-  quotes.
+  install used; with a venv that's `<repo>\.venv\Scripts\python.exe` on Windows,
+  `<repo>/.venv/bin/python` on macOS/Linux). On Windows use forward slashes or
+  escaped backslashes inside the quotes. **A bare `python` is the #1 failure:** if
+  that interpreter can't import cairn, the server dies at launch and the tools
+  simply never appear. Prove the path first:
+
+  ```
+  <full-path-to-python> -X utf8 -c "import cairn; print(cairn.__file__)"
+  ```
 - `-X utf8` — required on Windows so the server can print Cairn's Unicode output.
 - `default_tools_approval_mode = "approve"` — lets Codex call the tools without a
   per-call approval popup, which would otherwise auto-cancel in a headless run.
@@ -136,6 +155,11 @@ re-reads the config and launches the server.
 vault returns an empty-but-valid digest — that's success. You now have all eight:
 `cairn_orient`, `cairn_fetch`, `cairn_search`, `cairn_recent`, `cairn_read`,
 `cairn_logs`, `cairn_wander`, `cairn_note`.
+
+> **Don't judge this wire by `cairn doctor` (yet).** Doctor's MCP line currently
+> reads **Claude Desktop's** config only — on a Codex-wired machine it can print
+> *"MCP: not found in a known client config"* while Codex is working perfectly.
+> Trust the smoke test, `codex mcp list`, and `cairn codex-hook status` for Codex.
 
 ### 6b · Agentic capture  *(optional — off by default)*
 Wrap Codex's `notify` hook so notify-fired turns (agentic/computer-use turns and
@@ -223,7 +247,6 @@ Rules for every note:
 - Never send vault contents to any external service beyond your own context.
 - Never modify Cairn's code (your Cairn checkout) unless the owner explicitly
   asks in the current chat.
-- Nothing about this project is public. No sharing, no publishing.
 
 ## If the owner says "follow your Cairn protocol"
 That means you have drifted: immediately cairn_orient, re-read this file's
@@ -245,8 +268,13 @@ python -X utf8 -m cairn import codex-sessions --apply    # write the new-going-f
   the numbers, then re-run with `--apply` (a reversible manifest is saved to `~/.cairn/`
   first; imported nodes are append-only and can be voided).
 - **Forward-only by default** — the first `--apply` sets a watermark, so existing
-  history stays on disk untouched. Add `--include-before=YYYY-MM-DD` to backfill a
-  bounded window of past chat on purpose.
+  history stays on disk untouched. To also pull older chat, add `--include-before=YYYY-MM-DD`
+  — despite the name, this is a **lower bound**: it imports turns dated *on or after* that
+  date, up to the current watermark (not everything before it).
+- **Windows long paths** — very deeply-nested session files can exceed the 260-char
+  path limit and fail to read; the import report counts them as truncated files. If a
+  thread you expect doesn't land, check that count (enabling Windows long-path
+  support also clears it).
 - **Attribution** — `--account=NAME` stamps + locks the account. The store has no
   per-record account id, so everything is attributed to one account: a second OpenAI
   login on the same machine can't be told apart (a documented known limit).
@@ -255,8 +283,15 @@ The three Codex→vault paths, kept distinct: `cairn_note` = salience · `notify
 agentic events · `import codex-sessions` = full plain chat.
 
 ### Troubleshooting
+- **Tools never appeared at all?** The configured interpreter probably can't
+  `import cairn`. Run `<full-path-to-python> -X utf8 -c "import cairn; print(cairn.__file__)"` —
+  if it errors, point `command` at the Python your install actually used (venv:
+  `Scripts\python.exe`), then fully restart Codex.
 - **Tools don't show up?** Restart Codex (quit the desktop app fully, or open a
   new CLI thread) so it relaunches the MCP server after a config change.
+- **`cairn doctor` says "MCP: not found" but the tools work?** Known blind spot —
+  doctor's MCP check reads only Claude Desktop's config today, never
+  `~/.codex/config.toml`. Believe the smoke test / `codex mcp list`, not that line.
 - **Garbled output / Unicode errors on Windows?** The `-X utf8` flag in `args` is
   what fixes it — make sure it's there.
 - **A turn asks for approval, or the tool call cancels itself?** Set
@@ -278,12 +313,18 @@ To back up Cairn, copy `~/.cairn/`. To move machines, copy it across. That's the
 ---
 
 ## If something's off
-1. **`cairn doctor`** — always first; it names exactly what's missing.
+1. **`cairn doctor`** — always first; it names exactly what's missing. *(Known gap:
+   its **MCP** line covers Claude Desktop only — for Codex trust `codex mcp list`
+   and `cairn codex-hook status`, per [§6a](#6a--tools-via-mcp).)*
 2. **Garbled output on Windows?** Use `python -X utf8 -m cairn …`.
 3. **Dashboard won't load, or shows the old UI?** Restart it and **hard-refresh**
    the browser (`Ctrl+Shift+R`) — the page is served inline and caches hard.
 4. **`cairn` not found?** The editable install puts it on your PATH — re-run the
    installer, or just use `python -m cairn …`.
+5. **Memory map is one big cloud in the middle?** A vault before its first
+   `cairn sleep` renders as one center cloud — normal, not merged accounts. Run
+   `python -X utf8 -m cairn sleep` once, restart the dashboard, hard-refresh;
+   galaxies separate after the first bake.
 
 ---
 
