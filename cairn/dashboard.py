@@ -285,6 +285,15 @@ def run_dashboard(port: int = 7331, session_id: str | None = None,
         client-side — no physics, no node cap, no re-scramble."""
         import math as _math
         from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        # Lazy self-heal: if an account change (new galaxy / heal / import) flagged
+        # the atlas stale, rebuild coordinates ONCE here (guarded so concurrent
+        # polls don't duplicate), so this response already serves separated galaxies
+        # — no manual cairn edges / atlas / sleep needed.
+        try:
+            from cairn.edges import rebuild_atlas_if_stale
+            rebuild_atlas_if_stale(vault)
+        except Exception:
+            pass
         rows = vault.conn.execute("""
             SELECT n.id, n.kind, n.community, n.importance, n.map_x, n.map_y,
                    n.gist, n.query, n.tags, n.timestamp, n.memory_tier,

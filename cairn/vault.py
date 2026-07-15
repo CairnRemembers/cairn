@@ -452,6 +452,35 @@ CREATE TABLE IF NOT EXISTS attention_ledger (
 CREATE INDEX IF NOT EXISTS idx_ledger_node  ON attention_ledger(node_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_shown ON attention_ledger(shown_at);
 
+-- derived-atlas bookkeeping (key/value): 'ringR' galaxy ring radius, 'rev' a
+-- monotonic revision so an open dashboard notices coordinate-only rebuilds, and
+-- 'stale' — set when an account changes so the NEXT /api/atlas request rebuilds
+-- the coordinates once and clears it. Defined here so writers can flip 'stale'
+-- inside a normal transaction (no DDL implicit-commit surprises).
+CREATE TABLE IF NOT EXISTS atlas_meta (k TEXT PRIMARY KEY, v REAL);
+
+-- CENTRAL stale-marking. Any account (galaxy) change on a session flags the atlas
+-- stale so the next /api/atlas request re-separates the galaxies. Covers EVERY
+-- path in one place — normal-capture heal, a new second account first appearing,
+-- fix-session, backfill, and imports — because they all land as a sessions
+-- INSERT or UPDATE. A new session in an EXISTING galaxy is NOT flagged (its fresh
+-- nodes already place in the right galaxy).
+CREATE TRIGGER IF NOT EXISTS atlas_stale_on_account_change
+AFTER UPDATE OF account ON sessions
+FOR EACH ROW WHEN NEW.account IS NOT OLD.account
+BEGIN
+    INSERT INTO atlas_meta(k, v) VALUES ('stale', 1)
+        ON CONFLICT(k) DO UPDATE SET v = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS atlas_stale_on_new_galaxy
+AFTER INSERT ON sessions
+FOR EACH ROW WHEN NEW.account IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM sessions WHERE account = NEW.account AND id <> NEW.id)
+BEGIN
+    INSERT INTO atlas_meta(k, v) VALUES ('stale', 1)
+        ON CONFLICT(k) DO UPDATE SET v = 1;
+END;
+
 CREATE TRIGGER IF NOT EXISTS immutable_nodes
 BEFORE UPDATE ON nodes
 WHEN NOT (
@@ -1088,7 +1117,9 @@ class Vault:
         # label, but a guess never overwrites a locked stamp and a guess never
         # overwrites another guess — so a stale guess can't refreeze and Desktop
         # proof can heal a provisional label at Stop-time. Only fix-session/
-        # doctor (human) moves a locked label.
+        # doctor (human) moves a locked label. An account change here (a new
+        # galaxy appearing, or a heal to a different account) flags the atlas
+        # stale via the atlas_stale_on_* triggers — no explicit call needed.
         self.conn.execute("""
             INSERT INTO sessions (id, started_at, node_count, account, harness, account_locked)
             VALUES (?,?,1,?,?,?)

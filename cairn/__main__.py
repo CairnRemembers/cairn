@@ -3045,15 +3045,17 @@ def cmd_account(args: list[str]) -> None:
         v.conn.commit()
         print(f"session {sid[:8]}…: {old_acct!r} -> {new_acct!r}  (LOCKED; node content untouched)")
         if new_acct != old_acct:
-            # the account (galaxy) changed → realign the derived atlas so the two
-            # galaxies don't keep sharing stale single-layout coordinates. Derived
-            # data only (map_x/map_y); node content is never touched.
+            # the account (galaxy) changed. The UPDATE above already flagged the
+            # atlas stale (atlas_stale_on_account_change trigger), so the dashboard
+            # self-heals on its next request even if the immediate realign here
+            # fails. Realign now for instant CLI feedback — derived data only
+            # (map_x/map_y); node content is never touched.
             try:
                 from cairn.edges import compute_atlas
                 compute_atlas(v)
                 print("  · realigned the galaxy map to the corrected account.")
             except Exception:
-                print("  · could not auto-realign the map — run: cairn atlas")
+                print("  · flagged the galaxy map — realigns on the next dashboard open (or run: cairn atlas)")
         return
 
     if sub == "backfill":
@@ -3122,12 +3124,14 @@ def cmd_account(args: list[str]) -> None:
         print(f"\n  APPLIED: {len(repair)} repaired, {n} rows locked. backup: {bak.name}")
         print("  node content untouched. uncovered/ambiguous rows left unlocked & correctable.")
         if repair:                          # accounts actually changed → realign galaxies
+            # the UPDATEs above already flagged the atlas stale (trigger); realign
+            # now for instant feedback, dashboard self-heals otherwise.
             try:
                 from cairn.edges import compute_atlas
                 compute_atlas(v)
                 print("  · realigned the galaxy map to the corrected accounts.")
             except Exception:
-                print("  · could not auto-realign the map — run: cairn atlas")
+                print("  · flagged the galaxy map — realigns on the next dashboard open (or run: cairn atlas)")
         return
 
     # default: list

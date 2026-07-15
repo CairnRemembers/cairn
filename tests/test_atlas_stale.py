@@ -139,6 +139,120 @@ def test_fix_session_auto_realigns_atlas(tmp_path, monkeypatch):
     assert math.hypot(ax - bx, ay - by) > 100, "galaxies still overlap after repair"
 
 
+def _stale(v):
+    r = v.conn.execute("SELECT v FROM atlas_meta WHERE k='stale'").fetchone()
+    return (r["v"] if r else 0)
+
+
+def _acct_env(tmp_path, monkeypatch, *registered):
+    """Isolate HOME/vault, register account slugs so CAIRN_ACCOUNT locks them."""
+    import json as _json
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+    monkeypatch.delenv("CAIRN_ACCOUNT", raising=False)
+    monkeypatch.setattr(vaultmod, "VAULT_ROOT", tmp_path)
+    vaultmod._ACCOUNT_MEMO.clear()
+    acctmod._DESKTOP_MEMO.clear()
+    acctmod._IDENTITY_MEMO.clear()
+    (tmp_path / ".cairn").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".cairn" / "accounts.json").write_text(_json.dumps(
+        {s.lower(): {"label": s, "maker": "Claude", "stable_id": s.lower()}
+         for s in registered}), encoding="utf-8")
+
+
+# ── normal-capture path: a NEW second account appears → auto-separates, no cmd ──
+def test_new_account_via_capture_separates_on_next_atlas_request(tmp_path, monkeypatch):
+    _acct_env(tmp_path, monkeypatch, "Claude", "Gpt")
+    v = Vault(db_path=str(tmp_path / "cairn.db"))
+    # Phase 1 — Claude captures + a rebuild bakes it (as an earlier sleep would).
+    monkeypatch.setenv("CAIRN_ACCOUNT", "Claude")
+    _seed_nodes(v, "claudeS", 8, "c")
+    compute_atlas(v)
+    assert _stale(v) == 0                              # baked, flag cleared
+    # Phase 2 — the GPT account writes for the FIRST time via ordinary capture.
+    monkeypatch.setenv("CAIRN_ACCOUNT", "Gpt")
+    vaultmod._ACCOUNT_MEMO.clear()
+    _seed_nodes(v, "gptS", 8, "g")
+    assert _stale(v) == 1                              # trigger flagged it — no manual step
+    r_before = v.conn.execute(
+        "SELECT COUNT(*) c FROM nodes n JOIN sessions s ON n.session=s.id "
+        "WHERE s.account='Gpt' AND n.map_x IS NULL").fetchone()["c"]
+    assert r_before == 8                               # GPT nodes un-baked → would overlap at center
+    rev0 = _rev(v)
+    # THE ATLAS REQUEST — no cairn edges / atlas / sleep. This is what /api/atlas calls.
+    from cairn.edges import rebuild_atlas_if_stale
+    assert rebuild_atlas_if_stale(v) is True
+    assert _stale(v) == 0 and _rev(v) == rev0 + 1      # rebuilt once, flag cleared, rev bumped
+    cx, cy, cn = _centroid(v, "Claude")
+    gx, gy, gn = _centroid(v, "Gpt")
+    assert cn == 8 and gn == 8                         # GPT now baked
+    assert math.hypot(cx - gx, cy - gy) > 100          # galaxies AUTO-separated
+
+
+def test_guess_heals_to_proven_account_flags_stale(tmp_path, monkeypatch):
+    _acct_env(tmp_path, monkeypatch, "Bbb")
+    v = Vault(db_path=str(tmp_path / "cairn.db"))
+    _seed_session(v, "s1", "Aaa", locked=0)           # an unlocked GUESS
+    _seed_nodes(v, "s1", 4, "a")
+    compute_atlas(v)
+    assert _stale(v) == 0
+    monkeypatch.setenv("CAIRN_ACCOUNT", "Bbb")         # proof/declared, registered → locked
+    vaultmod._ACCOUNT_MEMO.clear()
+    v.write(MicroNode(session="s1", kind="insight", query="a healed turn worth keeping",
+                      model="human", agent_role="worker", memory_tier=1, tags=["h"]))
+    healed = v.conn.execute("SELECT account FROM sessions WHERE id='s1'").fetchone()["account"]
+    assert healed == "Bbb"                             # guess healed to the proven account
+    assert _stale(v) == 1                              # and the atlas was flagged
+
+
+def test_import_style_new_account_flags_stale(tmp_path, monkeypatch):
+    # an import introducing a new account lands as a sessions INSERT → trigger fires.
+    _acct_env(tmp_path, monkeypatch)
+    v = Vault(db_path=str(tmp_path / "cairn.db"))
+    _seed_session(v, "sA", "Existing")
+    _seed_nodes(v, "sA", 3, "a")
+    compute_atlas(v)
+    assert _stale(v) == 0
+    _seed_session(v, "import-x", "Imported")           # a fresh galaxy via (import) insert
+    assert _stale(v) == 1
+
+
+def test_new_session_in_existing_galaxy_not_flagged(tmp_path, monkeypatch):
+    _acct_env(tmp_path, monkeypatch)
+    v = Vault(db_path=str(tmp_path / "cairn.db"))
+    _seed_session(v, "s1", "Solo")
+    _seed_nodes(v, "s1", 4, "a")
+    compute_atlas(v)
+    assert _stale(v) == 0
+    _seed_session(v, "s2", "Solo")                     # SAME galaxy, different session
+    assert _stale(v) == 0                              # no new galaxy → not flagged, no needless rebuild
+
+
+def test_rebuild_atlas_if_stale_idempotent_and_guarded(tmp_path, monkeypatch):
+    monkeypatch.setattr(vaultmod, "VAULT_ROOT", tmp_path)
+    v = Vault(db_path=str(tmp_path / "cairn.db"))
+    _seed_session(v, "s", "Solo")
+    _seed_nodes(v, "s", 5, "s")
+    compute_atlas(v)
+    from cairn.edges import rebuild_atlas_if_stale, _atlas_rebuild_lock
+    r0 = _rev(v)
+    assert rebuild_atlas_if_stale(v) is False and _rev(v) == r0        # not stale → no-op
+    v.conn.execute("INSERT INTO atlas_meta(k,v) VALUES('stale',1) "
+                   "ON CONFLICT(k) DO UPDATE SET v=1")
+    v.conn.commit()
+    _atlas_rebuild_lock.acquire()                                      # simulate a concurrent rebuild
+    try:
+        assert rebuild_atlas_if_stale(v) is False                     # guarded → skipped
+        assert _stale(v) == 1 and _rev(v) == r0                        # no duplicate rebuild
+    finally:
+        _atlas_rebuild_lock.release()
+    assert rebuild_atlas_if_stale(v) is True                           # lock free → rebuild once
+    assert _stale(v) == 0 and _rev(v) == r0 + 1
+
+
 def test_cmd_atlas_recomputes(tmp_path, monkeypatch):
     # the lightweight `cairn atlas` command: recompute positions, bump rev, separate.
     monkeypatch.setenv("HOME", str(tmp_path))

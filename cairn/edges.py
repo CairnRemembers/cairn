@@ -719,10 +719,45 @@ def compute_atlas(vault: Optional[Vault] = None) -> int:
             "UPDATE nodes SET map_x = ?, map_y = ? WHERE id = ?", pos)
         # Bump a monotonic atlas revision so an already-open dashboard can tell a
         # COORDINATE-ONLY rebuild happened even when node/edge counts are unchanged
-        # (e.g. after an account was reassigned and the galaxies re-separated).
+        # (e.g. after an account was reassigned and the galaxies re-separated), and
+        # CLEAR the stale flag — this rebuild reflects the current account layout.
         v.conn.execute("INSERT INTO atlas_meta(k, v) VALUES('rev', 1) "
                        "ON CONFLICT(k) DO UPDATE SET v = v + 1")
+        v.conn.execute("INSERT INTO atlas_meta(k, v) VALUES('stale', 0) "
+                       "ON CONFLICT(k) DO UPDATE SET v = 0")
     return len(pos)
+
+
+import threading as _threading
+_atlas_rebuild_lock = _threading.Lock()
+
+
+def rebuild_atlas_if_stale(vault: Optional[Vault] = None) -> bool:
+    """Lazy self-heal for the derived atlas: if an account change flagged it
+    'stale', recompute coordinates ONCE and clear the flag. GUARDED + idempotent —
+    a non-blocking lock means concurrent dashboard polls can never launch duplicate
+    rebuilds (the loser serves current coords; its next poll sees the bumped rev).
+    Returns True iff a rebuild ran. Fail-safe: any error is a no-op so the atlas
+    request never breaks."""
+    v = vault or Vault()
+    try:
+        row = v.conn.execute("SELECT v FROM atlas_meta WHERE k='stale'").fetchone()
+    except Exception:
+        return False
+    if not (row and row["v"]):
+        return False
+    if not _atlas_rebuild_lock.acquire(blocking=False):
+        return False                      # another request is already rebuilding
+    try:
+        row = v.conn.execute("SELECT v FROM atlas_meta WHERE k='stale'").fetchone()
+        if not (row and row["v"]):        # a concurrent rebuild already cleared it
+            return False
+        compute_atlas(v)                  # rebuilds coords, clears stale, bumps rev
+        return True
+    except Exception:
+        return False
+    finally:
+        _atlas_rebuild_lock.release()
 
 
 def build_all(vault: Optional[Vault] = None, k: int = KNN_K) -> dict:
