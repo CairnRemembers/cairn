@@ -524,6 +524,36 @@ def _name_communities(v: Vault, communities: list[list[str]]) -> list[str]:
     return names
 
 
+def _ensure_atlas_meta(conn) -> None:
+    """The derived-atlas bookkeeping table. Created outside any transaction by
+    callers on py<3.12 where DDL implicitly commits (see compute_atlas)."""
+    conn.execute("CREATE TABLE IF NOT EXISTS atlas_meta (k TEXT PRIMARY KEY, v REAL)")
+
+
+def _atlas_dirty_gen(vault) -> float:
+    """The current invalidation generation ('dirty_rev'); 0.0 if never bumped.
+    compute_atlas records THIS (captured before its node snapshot) as 'built_rev',
+    so an account change landing mid-rebuild stays visible (dirty_rev > built_rev)."""
+    try:
+        _ensure_atlas_meta(vault.conn)
+        row = vault.conn.execute(
+            "SELECT v FROM atlas_meta WHERE k='dirty_rev'").fetchone()
+        return float(row["v"]) if row and row["v"] is not None else 0.0
+    except Exception:
+        return 0.0
+
+
+def atlas_is_stale(vault) -> bool:
+    """True iff an account change bumped dirty_rev past the last built_rev."""
+    try:
+        _ensure_atlas_meta(vault.conn)
+        rows = {r["k"]: (r["v"] or 0) for r in vault.conn.execute(
+            "SELECT k, v FROM atlas_meta WHERE k IN ('dirty_rev','built_rev')")}
+    except Exception:
+        return False
+    return (rows.get("dirty_rev") or 0) > (rows.get("built_rev") or 0)
+
+
 def compute_atlas(vault: Optional[Vault] = None) -> int:
     """
     Precompute a STABLE spatial position for every active node — the atlas.
@@ -542,12 +572,24 @@ def compute_atlas(vault: Optional[Vault] = None) -> int:
     canvas with zero physics. Derived data, rewritten each build.
     """
     v = vault or Vault()
+    # Capture the invalidation generation we are about to build FROM, BEFORE the
+    # node snapshot below. We record THIS as built_rev at the end (not the value at
+    # write-time), so an account change arriving mid-rebuild leaves dirty_rev >
+    # built_rev and the next /api/atlas rebuilds again — no lost update.
+    observed_gen = _atlas_dirty_gen(v)
     GA = 2.0 * math.pi * 0.3819660112501051   # golden angle
     rows = v.conn.execute(
         "SELECT n.id, n.community, n.importance, s.account "
         "FROM nodes n LEFT JOIN sessions s ON n.session = s.id "
         "WHERE n.status = 'active'").fetchall()   # active only — void nodes never get coords
     if not rows:
+        # Nothing to place, but still record the generation as built so an empty
+        # vault doesn't re-rebuild on every atlas request.
+        _ensure_atlas_meta(v.conn)
+        with v.conn:
+            v.conn.execute(
+                "INSERT INTO atlas_meta(k, v) VALUES('built_rev', ?) "
+                "ON CONFLICT(k) DO UPDATE SET v = MAX(v, excluded.v)", (observed_gen,))
         return 0
 
     def _galaxy(acct):
@@ -714,49 +756,117 @@ def compute_atlas(vault: Optional[Vault] = None) -> int:
     # versions (the table also gets created in the multi-galaxy branch above; both
     # are IF NOT EXISTS, so this is a harmless no-op when it already exists).
     v.conn.execute("CREATE TABLE IF NOT EXISTS atlas_meta (k TEXT PRIMARY KEY, v REAL)")
-    with v.conn:
-        v.conn.executemany(
-            "UPDATE nodes SET map_x = ?, map_y = ? WHERE id = ?", pos)
-        # Bump a monotonic atlas revision so an already-open dashboard can tell a
-        # COORDINATE-ONLY rebuild happened even when node/edge counts are unchanged
-        # (e.g. after an account was reassigned and the galaxies re-separated), and
-        # CLEAR the stale flag — this rebuild reflects the current account layout.
-        v.conn.execute("INSERT INTO atlas_meta(k, v) VALUES('rev', 1) "
-                       "ON CONFLICT(k) DO UPDATE SET v = v + 1")
-        v.conn.execute("INSERT INTO atlas_meta(k, v) VALUES('stale', 0) "
-                       "ON CONFLICT(k) DO UPDATE SET v = 0")
-    return len(pos)
+    # Publish coordinates ONLY if no NEWER generation appeared while we laid out.
+    # BEGIN IMMEDIATE takes SQLite's write lock UP FRONT — and that lock is
+    # cross-process, unlike the per-process _atlas_rebuild_lock — so we atomically
+    # re-check the CURRENT dirty_rev against the generation we built FROM. If an
+    # account change landed mid-compute (or a newer rebuild already ran in another
+    # process), dirty_rev has moved past observed_gen and we SKIP the entire write:
+    # otherwise a slow OLDER compute finishing last would clobber the newer
+    # coordinates AND set built_rev=MAX(..)=newer, marking the atlas falsely clean.
+    # Skipping leaves dirty_rev > built_rev, so the next /api/atlas rebuilds from the
+    # current generation. isolation_level=None gives explicit-transaction control on
+    # every Python version; it is restored in the finally.
+    published = False
+    _iso = v.conn.isolation_level
+    try:
+        v.conn.isolation_level = None
+        v.conn.execute("BEGIN IMMEDIATE")
+        cur = v.conn.execute("SELECT v FROM atlas_meta WHERE k='dirty_rev'").fetchone()
+        cur_gen = float(cur["v"]) if cur and cur["v"] is not None else 0.0
+        if cur_gen == observed_gen:
+            v.conn.executemany(
+                "UPDATE nodes SET map_x = ?, map_y = ? WHERE id = ?", pos)
+            # Bump a monotonic atlas revision so an already-open dashboard can tell a
+            # COORDINATE-ONLY rebuild happened even when node/edge counts are unchanged.
+            v.conn.execute("INSERT INTO atlas_meta(k, v) VALUES('rev', 1) "
+                           "ON CONFLICT(k) DO UPDATE SET v = v + 1")
+            # Mark built up to the generation we actually built from (== the current
+            # dirty_rev, verified above). MAX() keeps it monotonic.
+            v.conn.execute("INSERT INTO atlas_meta(k, v) VALUES('built_rev', ?) "
+                           "ON CONFLICT(k) DO UPDATE SET v = MAX(v, excluded.v)", (observed_gen,))
+            published = True
+        v.conn.execute("COMMIT")
+    except Exception:
+        try:
+            v.conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        v.conn.isolation_level = _iso
+    return len(pos) if published else 0
 
 
 import threading as _threading
 _atlas_rebuild_lock = _threading.Lock()
 
 
-def rebuild_atlas_if_stale(vault: Optional[Vault] = None) -> bool:
-    """Lazy self-heal for the derived atlas: if an account change flagged it
-    'stale', recompute coordinates ONCE and clear the flag. GUARDED + idempotent —
-    a non-blocking lock means concurrent dashboard polls can never launch duplicate
-    rebuilds (the loser serves current coords; its next poll sees the bumped rev).
-    Returns True iff a rebuild ran. Fail-safe: any error is a no-op so the atlas
-    request never breaks."""
-    v = vault or Vault()
+def _close_vault(vault) -> None:
     try:
-        row = v.conn.execute("SELECT v FROM atlas_meta WHERE k='stale'").fetchone()
+        vault.conn.close()
+    except Exception:
+        pass
+
+
+def _atlas_stale_probe(db_path) -> bool:
+    """Cheap 'is the atlas stale?' check on a private, short-lived connection —
+    NOT the caller's shared handle, and no Vault/SCHEMA cost on the hot path."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(db_path))
     except Exception:
         return False
-    if not (row and row["v"]):
+    try:
+        rows = {k: (val or 0) for k, val in conn.execute(
+            "SELECT k, v FROM atlas_meta WHERE k IN ('dirty_rev','built_rev')")}
+        return (rows.get("dirty_rev") or 0) > (rows.get("built_rev") or 0)
+    except Exception:
+        return False                      # atlas_meta may not exist yet → not stale
+    finally:
+        conn.close()
+
+
+def rebuild_atlas_if_stale(vault: Optional[Vault] = None) -> bool:
+    """Lazy self-heal for the derived atlas. If an account change bumped the
+    invalidation generation past the last built one, recompute coordinates ONCE and
+    record that generation as built. GUARDED + idempotent — a non-blocking lock
+    means concurrent dashboard polls never launch duplicate rebuilds.
+
+    CONCURRENCY (the blocker fix): every DB access runs on a DEDICATED, short-lived
+    connection to the SAME db path — NEVER the caller's connection. The dashboard
+    shares one sqlite3 handle across threads and its SSE feed reads it every second;
+    writing the rebuild onto that handle races those reads → sqlite3.InterfaceError
+    that can kill the live feed. WAL lets this private writer and the shared reader
+    coexist; the reader simply sees the committed new coordinates.
+
+    Returns True iff a rebuild ran. Fail-safe: any error is a no-op."""
+    # Learn the db path from the caller WITHOUT any I/O on its shared connection.
+    db_path = getattr(vault, "db_path", None)
+    if db_path is None:
+        try:
+            _probe_v = Vault()
+            db_path = _probe_v.db_path
+            _close_vault(_probe_v)
+        except Exception:
+            return False
+    # Hot-path pre-check on a private connection — is a rebuild even needed?
+    if not _atlas_stale_probe(db_path):
         return False
     if not _atlas_rebuild_lock.acquire(blocking=False):
         return False                      # another request is already rebuilding
+    worker = None
     try:
-        row = v.conn.execute("SELECT v FROM atlas_meta WHERE k='stale'").fetchone()
-        if not (row and row["v"]):        # a concurrent rebuild already cleared it
+        worker = Vault(db_path=str(db_path))   # DEDICATED short-lived handle (WAL)
+        if not atlas_is_stale(worker):         # re-check under the lock
             return False
-        compute_atlas(v)                  # rebuilds coords, clears stale, bumps rev
+        compute_atlas(worker)                  # writes on worker.conn, not the caller's
         return True
     except Exception:
         return False
     finally:
+        if worker is not None:
+            _close_vault(worker)
         _atlas_rebuild_lock.release()
 
 

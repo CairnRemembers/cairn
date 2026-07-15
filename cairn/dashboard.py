@@ -59,6 +59,18 @@ def _atlas_project_colors(tags: list) -> dict:
     return colors
 
 
+def _sse_start_ts(conn):
+    """Starting boundary for the live SSE feed: the newest node timestamp, so the
+    stream begins from NOW and replays no history. Returns None if the read fails —
+    the caller retries and NEVER falls back to '' (an empty boundary makes
+    `timestamp > ''` match the whole vault and replay all history as 'live')."""
+    try:
+        row0 = conn.execute("SELECT MAX(timestamp) m FROM nodes").fetchone()
+        return (row0["m"] if row0 else "") or ""
+    except Exception:
+        return None
+
+
 def run_dashboard(port: int = 7331, session_id: str | None = None,
                   open_browser: bool = True):
     try:
@@ -916,8 +928,8 @@ def run_dashboard(port: int = 7331, session_id: str | None = None,
         """Server-Sent Events — pushes new nodes as they arrive."""
         async def generate():
             # Start from "now" so we stream only NEW nodes, not 64k of history.
-            row0 = vault.conn.execute("SELECT MAX(timestamp) m FROM nodes").fetchone()
-            last_ts = (row0["m"] if row0 else "") or ""
+            # None means the boundary read failed — retry in the loop; never "".
+            last_ts = _sse_start_ts(vault.conn)
             # 5a: tool calls no longer become nodes, so the live "tools as they
             # fire" stream comes from the pending_tools buffers. Track how many
             # records we've emitted per buffer file; when a file shrinks (drained
@@ -926,19 +938,34 @@ def run_dashboard(port: int = 7331, session_id: str | None = None,
             from cairn import pending as _pending
             tool_offsets: dict = {}
             while True:
+                if last_ts is None:
+                    # The initial boundary read failed — retry it here; NEVER stream
+                    # from an empty-string boundary, which would replay the whole
+                    # vault as "live". Until it succeeds, emit nothing.
+                    last_ts = _sse_start_ts(vault.conn)
+                    if last_ts is None:
+                        await asyncio.sleep(1.0)
+                        continue
                 # Follow ALL live activity by timestamp, not one fixed session. The
                 # old code locked onto the session current when the stream OPENED, so
                 # when the session rolled over (new chat / post-compaction session id)
                 # the feed silently stopped and you had to refresh. ?sess= still
                 # scopes to a single session if explicitly asked.
-                if sess:
-                    rows = vault.conn.execute(
-                        "SELECT * FROM nodes WHERE session=? AND timestamp>? "
-                        "ORDER BY timestamp ASC LIMIT 20", (sess, last_ts)).fetchall()
-                else:
-                    rows = vault.conn.execute(
-                        "SELECT * FROM nodes WHERE timestamp>? "
-                        "ORDER BY timestamp ASC LIMIT 20", (last_ts,)).fetchall()
+                try:
+                    if sess:
+                        rows = vault.conn.execute(
+                            "SELECT * FROM nodes WHERE session=? AND timestamp>? "
+                            "ORDER BY timestamp ASC LIMIT 20", (sess, last_ts)).fetchall()
+                    else:
+                        rows = vault.conn.execute(
+                            "SELECT * FROM nodes WHERE timestamp>? "
+                            "ORDER BY timestamp ASC LIMIT 20", (last_ts,)).fetchall()
+                except Exception:
+                    # A transient read error (e.g. a concurrent writer on the shared
+                    # connection) must NEVER kill the live feed — skip this tick and
+                    # retry next second. The atlas rebuild no longer writes on this
+                    # connection (its own handle now), but other endpoints can.
+                    rows = []
                 for row in rows:
                     last_ts = row["timestamp"]
                     data = json.dumps({

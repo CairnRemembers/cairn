@@ -452,33 +452,66 @@ CREATE TABLE IF NOT EXISTS attention_ledger (
 CREATE INDEX IF NOT EXISTS idx_ledger_node  ON attention_ledger(node_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_shown ON attention_ledger(shown_at);
 
--- derived-atlas bookkeeping (key/value): 'ringR' galaxy ring radius, 'rev' a
--- monotonic revision so an open dashboard notices coordinate-only rebuilds, and
--- 'stale' — set when an account changes so the NEXT /api/atlas request rebuilds
--- the coordinates once and clears it. Defined here so writers can flip 'stale'
--- inside a normal transaction (no DDL implicit-commit surprises).
+-- derived-atlas bookkeeping (key/value): 'ringR' galaxy ring radius; 'rev' a
+-- monotonic revision so an open dashboard notices coordinate-only rebuilds; and a
+-- MONOTONIC dirty/built generation pair — 'dirty_rev' is bumped every time an
+-- account (galaxy) assignment changes, and compute_atlas sets 'built_rev' to the
+-- dirty_rev it observed BEFORE its node snapshot. The atlas is stale iff
+-- dirty_rev > built_rev, so the NEXT /api/atlas request rebuilds once. A generation
+-- PAIR (not a 0/1 flag) is what lets an account change that lands DURING a rebuild
+-- survive: the rebuild only advances built_rev to the generation it actually built,
+-- leaving dirty_rev ahead so the next request rebuilds again (no lost update).
+-- Defined here so writers can bump the generation inside a normal transaction.
 CREATE TABLE IF NOT EXISTS atlas_meta (k TEXT PRIMARY KEY, v REAL);
 
--- CENTRAL stale-marking. Any account (galaxy) change on a session flags the atlas
--- stale so the next /api/atlas request re-separates the galaxies. Covers EVERY
--- path in one place — normal-capture heal, a new second account first appearing,
--- fix-session, backfill, and imports — because they all land as a sessions
--- INSERT or UPDATE. A new session in an EXISTING galaxy is NOT flagged (its fresh
--- nodes already place in the right galaxy).
+-- CENTRAL invalidation. Any account (galaxy) change on a session BUMPS the atlas
+-- 'dirty_rev' so the next /api/atlas request re-separates the galaxies. Covers
+-- EVERY path in one place — normal-capture heal, a new second account first
+-- appearing, fix-session, backfill, and imports — because they all land as a
+-- sessions INSERT or UPDATE. A new session in an EXISTING galaxy is NOT flagged
+-- (its fresh nodes already place in the right galaxy). A monotonic increment
+-- (never a bare '1') so two changes can't collapse into one undetectable flag.
 CREATE TRIGGER IF NOT EXISTS atlas_stale_on_account_change
 AFTER UPDATE OF account ON sessions
 FOR EACH ROW WHEN NEW.account IS NOT OLD.account
 BEGIN
-    INSERT INTO atlas_meta(k, v) VALUES ('stale', 1)
-        ON CONFLICT(k) DO UPDATE SET v = 1;
+    INSERT INTO atlas_meta(k, v) VALUES ('dirty_rev', 1)
+        ON CONFLICT(k) DO UPDATE SET v = v + 1;
 END;
 CREATE TRIGGER IF NOT EXISTS atlas_stale_on_new_galaxy
 AFTER INSERT ON sessions
 FOR EACH ROW WHEN NEW.account IS NOT NULL
      AND NOT EXISTS (SELECT 1 FROM sessions WHERE account = NEW.account AND id <> NEW.id)
 BEGIN
-    INSERT INTO atlas_meta(k, v) VALUES ('stale', 1)
-        ON CONFLICT(k) DO UPDATE SET v = 1;
+    INSERT INTO atlas_meta(k, v) VALUES ('dirty_rev', 1)
+        ON CONFLICT(k) DO UPDATE SET v = v + 1;
+END;
+
+-- First NODE of a GENUINELY NEW galaxy. The readers (local-agent / codex import)
+-- stamp+commit a new-account session BEFORE writing its first nodes; if a rebuild
+-- lands in that gap, built_rev catches dirty_rev on an EMPTY galaxy and the later
+-- first node would stay unmapped with no invalidation. So bump dirty_rev when the
+-- first node of an account that has NO nodes anywhere arrives. NARROW on purpose:
+--  · the cheap first-node-per-session check filters the hot path (2nd+ node of a
+--    session fails NOT EXISTS(other node) immediately);
+--  · normal capture inserts the node BEFORE the session, so EXISTS(session w/ account)
+--    is false and it never fires there — only the stamp-first reader path reaches here;
+--  · the account-wide NO-nodes check means a NEW SESSION in an EXISTING galaxy does
+--    NOT invalidate (galaxy structure unchanged) — fixing the over-broad first cut.
+-- LOWER() matches galaxy_label's lowercase grouping, so a reader's raw --account
+-- casing lines up with the canonical stored casing (never treated as a new galaxy).
+CREATE TRIGGER IF NOT EXISTS atlas_stale_on_first_session_node
+AFTER INSERT ON nodes
+FOR EACH ROW WHEN NEW.status = 'active'
+     AND NOT EXISTS (SELECT 1 FROM nodes WHERE session = NEW.session AND id <> NEW.id)
+     AND EXISTS (SELECT 1 FROM sessions WHERE id = NEW.session AND account IS NOT NULL)
+     AND NOT EXISTS (
+         SELECT 1 FROM nodes n2 JOIN sessions s2 ON n2.session = s2.id
+         WHERE n2.id <> NEW.id
+           AND LOWER(s2.account) = LOWER((SELECT account FROM sessions WHERE id = NEW.session)))
+BEGIN
+    INSERT INTO atlas_meta(k, v) VALUES ('dirty_rev', 1)
+        ON CONFLICT(k) DO UPDATE SET v = v + 1;
 END;
 
 CREATE TRIGGER IF NOT EXISTS immutable_nodes
@@ -809,6 +842,80 @@ class Vault:
                 self.conn.execute(sql)
             except Exception:
                 pass  # column already exists — idempotent
+
+        # Backs the atlas_stale_on_new_galaxy NOT EXISTS subquery (fires on every
+        # sessions INSERT). Created HERE, not in SCHEMA, because sessions.account is
+        # itself an ADD COLUMN migration above — an index needs the column to exist
+        # (a trigger body doesn't, so the atlas triggers can live in SCHEMA). Without
+        # it each insert full-scans sessions → O(n^2) on large imports/backfills.
+        try:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions(account)")
+        except Exception:
+            pass
+
+        # Refresh the atlas invalidation triggers (same drop+recreate pattern as
+        # immutable_nodes below). A DB created by the earlier 04fe766 candidate
+        # carries same-named atlas triggers with the OLD boolean-'stale' bodies, and
+        # SCHEMA's CREATE TRIGGER IF NOT EXISTS cannot swap a body — so drop and
+        # recreate to guarantee the current dirty_rev bodies. No-op on a public
+        # v0.3.1 upgrade (no atlas triggers existed) and on fresh vaults.
+        try:
+            self.conn.executescript("""
+                DROP TRIGGER IF EXISTS atlas_stale_on_account_change;
+                DROP TRIGGER IF EXISTS atlas_stale_on_new_galaxy;
+                DROP TRIGGER IF EXISTS atlas_stale_on_first_session_node;
+                CREATE TRIGGER IF NOT EXISTS atlas_stale_on_account_change
+                AFTER UPDATE OF account ON sessions
+                FOR EACH ROW WHEN NEW.account IS NOT OLD.account
+                BEGIN
+                    INSERT INTO atlas_meta(k, v) VALUES ('dirty_rev', 1)
+                        ON CONFLICT(k) DO UPDATE SET v = v + 1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS atlas_stale_on_new_galaxy
+                AFTER INSERT ON sessions
+                FOR EACH ROW WHEN NEW.account IS NOT NULL
+                     AND NOT EXISTS (SELECT 1 FROM sessions WHERE account = NEW.account AND id <> NEW.id)
+                BEGIN
+                    INSERT INTO atlas_meta(k, v) VALUES ('dirty_rev', 1)
+                        ON CONFLICT(k) DO UPDATE SET v = v + 1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS atlas_stale_on_first_session_node
+                AFTER INSERT ON nodes
+                FOR EACH ROW WHEN NEW.status = 'active'
+                     AND NOT EXISTS (SELECT 1 FROM nodes WHERE session = NEW.session AND id <> NEW.id)
+                     AND EXISTS (SELECT 1 FROM sessions WHERE id = NEW.session AND account IS NOT NULL)
+                     AND NOT EXISTS (
+                         SELECT 1 FROM nodes n2 JOIN sessions s2 ON n2.session = s2.id
+                         WHERE n2.id <> NEW.id
+                           AND LOWER(s2.account) = LOWER((SELECT account FROM sessions WHERE id = NEW.session)))
+                BEGIN
+                    INSERT INTO atlas_meta(k, v) VALUES ('dirty_rev', 1)
+                        ON CONFLICT(k) DO UPDATE SET v = v + 1;
+                END;
+            """)
+        except Exception:
+            pass
+
+        # One-time upgrade heal for a pre-generation vault. A vault created before
+        # the dirty/built generation model has no 'built_rev' key, so atlas_is_stale
+        # reads 0 > 0 = clean and an ALREADY multi-galaxy (overlapped) vault would
+        # NOT rebuild on the next dashboard open. Mark it dirty ONCE (while built_rev
+        # is still absent) so the first /api/atlas or `cairn sleep` re-separates the
+        # legacy overlap. Gated on >1 distinct account so single-galaxy vaults skip
+        # the needless rebuild; INSERT OR IGNORE stays idempotent across re-opens.
+        try:
+            has_built = self.conn.execute(
+                "SELECT 1 FROM atlas_meta WHERE k='built_rev'").fetchone()
+            if not has_built:
+                row = self.conn.execute(
+                    "SELECT COUNT(DISTINCT account) c FROM sessions "
+                    "WHERE account IS NOT NULL").fetchone()
+                if row and (row["c"] or 0) > 1:
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO atlas_meta(k, v) VALUES('dirty_rev', 1)")
+        except Exception:
+            pass
 
         # Refresh immutable trigger FIRST — the new scheduling-metadata branch
         # (which allows importance/stability_days/last_injected changes) must be
