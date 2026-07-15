@@ -253,7 +253,9 @@ def _gist_from_text(text: str) -> str:
     """
     Fuzzy-trace gist (Brainerd & Reyna): a ~12-word distillation stored
     alongside the verbatim episodic text. Gist traces are what survive —
-    injection sends gists by default, verbatim on demand via `cairn chain`.
+    injection sends gists by default; the verbatim is on demand via
+    `cairn read <id>` (CLI) / cairn_read (MCP). (`chain` is the parent-path
+    walker, not a text surface.)
 
     Heuristic, zero-token: cut at the first sentence boundary under 90 chars,
     then cap at 14 words. If that first fragment is a pure status/ack opener
@@ -497,9 +499,10 @@ class MicroNode:
     # their caps for UI/embedding size conventions; the COMPLETE text lands in the
     # derived episodic_text via to_episodic_text() so nothing past the cap is lost
     # (the vault's PAGE ONE data-loss warning). Set ONLY when text exceeds the
-    # cap — short turns leave this None and get the normal capped episodic_text,
-    # matching capture.py (which never sets it). Scrubbed at the write-gate like
-    # every other text field, so the frozen episodic_text stays secret-free.
+    # cap — short turns leave this None and get the normal capped episodic_text.
+    # All three turn writers set it the same way (capture.write_turn, codex_hook,
+    # the importers): overflow-only. Scrubbed at the write-gate like every other
+    # text field, so the frozen episodic_text stays secret-free.
     episodic_full:      Optional[str] = None
 
     def to_episodic_text(self, parent_hint: str = "") -> str:
@@ -603,11 +606,12 @@ class MicroNode:
 
         if self.kind == "conversation_turn":
             speaker_label = "user" if self.speaker == "user" else actor
-            # episodic_full carries the COMPLETE turn text for imports whose text
-            # overflowed output_preview's display cap — store it verbatim so the
-            # tail past the cap survives (it's the full-fidelity trace). When it's
-            # None (live capture, short imported turns) fall back to the capped
-            # display body, exactly as before.
+            # episodic_full carries the COMPLETE turn text whenever a writer's
+            # text overflowed output_preview's display cap — live Claude capture
+            # (capture.write_turn), the Codex hook, and the importers all use the
+            # same pattern — so the tail past the cap survives verbatim (the
+            # full-fidelity trace). When it's None (a short turn) fall back to
+            # the capped display body, exactly as before.
             if self.episodic_full:
                 return f"{speaker_label} said: {self.episodic_full}"
             body = self.output_preview or self.query or ""

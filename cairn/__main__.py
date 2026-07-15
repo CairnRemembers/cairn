@@ -463,6 +463,61 @@ def cmd_chain(args: list[str]) -> None:
         print(f"  {indent}{arrow}[{r['id']}] {r['tool'] or r['kind']}{ms}{rc}  '{text}'")
 
 
+def cmd_read(args: list[str]) -> None:
+    """
+    Read node(s) IN FULL by id or unambiguous prefix — the terminal's verbatim
+    surface. The scan commands (query/fetch/logs) show gists and capped
+    previews; this prints the complete stored text: query, output_preview, and
+    episodic_text (which carries the lossless tail of long turns).
+
+    Usage:
+      python -m cairn read <id> [<id> ...] [--max-chars=N]
+        --max-chars=N   optional per-field print cap (default: full text)
+    """
+    ids = [a for a in args if not a.startswith("--")]
+    cap = None
+    for a in args:
+        if a.startswith("--max-chars="):
+            try:
+                cap = max(200, int(a.split("=", 1)[1]))
+            except ValueError:
+                print("cairn: --max-chars needs a number"); sys.exit(1)
+    if not ids:
+        print("usage: python -m cairn read <id> [<id> ...] [--max-chars=N]")
+        sys.exit(1)
+    vault = Vault()
+    for want in ids[:8]:
+        rows = vault.conn.execute(
+            "SELECT id, kind, status, session, speaker, model, timestamp, tags, "
+            "       query, output_preview, episodic_text "
+            "FROM nodes WHERE id LIKE ? || '%' LIMIT 3", (want,)).fetchall()
+        if not rows:
+            print(f"── [{want}] not found."); continue
+        if len(rows) > 1:
+            print(f"── [{want}] ambiguous prefix — matches: "
+                  + ", ".join(r["id"] for r in rows)); continue
+        r = rows[0]
+        print(f"── [{r['id']}] {r['kind']} · {r['session']} · "
+              f"{r['speaker'] or '?'}/{r['model'] or '?'} · {r['timestamp']}")
+        if r["status"] != "active":
+            print(f"   ⚠ status={r['status']} — retired from ranked surfaces; "
+                  f"historical record.")
+        if r["tags"]:
+            print(f"   tags: {r['tags']}")
+        def _p(label, text):
+            if not text:
+                return
+            t = text if cap is None or len(text) <= cap else \
+                text[:cap] + f" [... capped at {cap} — drop --max-chars for all]"
+            print(f"   {label}: {t}")
+        _p("text", r["query"])
+        if r["output_preview"] and r["output_preview"] != r["query"]:
+            _p("preview", r["output_preview"])
+        if r["episodic_text"] and r["episodic_text"] not in (r["query"], r["output_preview"]):
+            _p("episodic", r["episodic_text"])
+        print()
+
+
 def cmd_session(args: list[str]) -> None:
     """
     Set or show the current session name.
@@ -1430,8 +1485,10 @@ def cmd_connect(args: list[str]) -> None:
     # Claude is covered by the hooks above. Other agents (Codex, Gemini, Cursor,
     # Windsurf) read their own rules file — drop a SELF-CONTAINED Cairn block.
     if root is not None and "--no-rules" not in args:
+        # v2 marker: bumping the version makes re-connect REFRESH a stale block
+        # in place (markers preserved) instead of skipping it forever.
         block = (
-            "<!-- cairn:start -->\n"
+            "<!-- cairn:start v2 -->\n"
             "## Cairn memory (local-first)\n"
             "This project uses Cairn. Before working:\n"
             "1. `python -m cairn doctor` — act ONLY on its ✗/⚠ items; never recreate ✓ items.\n"
@@ -1441,10 +1498,15 @@ def cmd_connect(args: list[str]) -> None:
             "   New chat = new session automatically; orient only reads the carryover. No\n"
             "   hooks in your runtime? run `python -m cairn session --new` once before you note.\n"
             "3. `python -m cairn fetch \"question\"` instead of re-reading files/history.\n"
+            "4. Fetch/search return GISTS — an index, not the text. Before relying on a\n"
+            "   summary, `python -m cairn read <id>` prints the node IN FULL.\n"
             "Capture (Claude does this automatically via hooks; other agents by hand),\n"
             "by SALIENCE not quota — some exchanges = 0 nodes, some = several:\n"
             "  `python -m cairn note --kind=decision|warning|open_item|insight|resolved \"...\"`\n"
             "  `python -m cairn note --speaker=user \"what the user wants\"`\n"
+            "  Write the complete salient fact without truncating it — but don't paste\n"
+            "  transcripts (turns are captured separately); large artifact → save the\n"
+            "  file, note its path and purpose.\n"
             "Laws: local-first (nothing leaves the machine) · append-only (void, never delete).\n"
             "<!-- cairn:end -->\n"
         )
@@ -1453,11 +1515,44 @@ def cmd_connect(args: list[str]) -> None:
         for t in targets:
             f = root / t
             try:
-                existing = f.read_text(encoding="utf-8") if f.exists() else ""
-                if "cairn:start" in existing or ("Cairn memory" in existing):
-                    continue  # already has a Cairn block
-                sep = "\n\n" if existing.strip() else ""
-                f.write_text(existing + sep + block, encoding="utf-8")
+                # BYTE-preserving splice: these files belong to the USER, so
+                # everything outside the marked cairn block must survive
+                # byte-identical — newline style (LF vs CRLF) and any BOM
+                # included. Text-mode write_text would rewrite the whole file
+                # in the platform's newline style; read/write bytes instead,
+                # and render the block in the file's own newline convention.
+                raw = f.read_bytes() if f.exists() else b""
+                bom = b"\xef\xbb\xbf" if raw.startswith(b"\xef\xbb\xbf") else b""
+                try:
+                    existing = raw[len(bom):].decode("utf-8")
+                except UnicodeDecodeError:
+                    # Not UTF-8 (UTF-16, legacy codepage, …). errors="replace"
+                    # here would silently mangle a USER-owned file on rewrite
+                    # (measured: a 132-byte UTF-16 file ballooned to 1,520 bytes
+                    # of replacement chars). Fail CLOSED: leave the file
+                    # byte-for-byte untouched and say so.
+                    print(f"       rules shim SKIPPED: {t} is not UTF-8 — "
+                          f"left untouched (add the cairn block by hand if wanted)")
+                    continue
+                nl = "\r\n" if "\r\n" in existing else "\n"
+                blk = block if nl == "\n" else block.replace("\n", "\r\n")
+                if "cairn:start v2" in existing:
+                    continue  # current block already present
+                start = existing.find("<!-- cairn:start")
+                end_m = existing.find("<!-- cairn:end -->")
+                if start != -1 and end_m > start:
+                    # stale versioned block — refresh it in place
+                    end = end_m + len("<!-- cairn:end -->")
+                    if existing[end:end + len(nl)] == nl:
+                        end += len(nl)
+                    f.write_bytes(bom + (existing[:start] + blk
+                                         + existing[end:]).encode("utf-8"))
+                    wrote.append(f"{t} (refreshed)")
+                    continue
+                if "Cairn memory" in existing:
+                    continue  # hand-rolled block without markers — leave it alone
+                sep = (nl * 2) if existing.strip() else ""
+                f.write_bytes(bom + (existing + sep + blk).encode("utf-8"))
                 wrote.append(t)
             except Exception:
                 pass
@@ -2935,6 +3030,7 @@ COMMANDS = {
     "sessions":  cmd_sessions,
     "query":     cmd_query,
     "xquery":    cmd_cross_query,
+    "read":      cmd_read,
     "chain":     cmd_chain,
     "compile":     cmd_compile,
     "orient":      cmd_orient,
@@ -2990,7 +3086,8 @@ def main():
         print("  xquery 'text'      cross-session search across entire vault history")
         print("  fetch  'text'      compact context pack for a query — token-saving retrieval")
         print("  wander 'text'      walk the edge graph outward — creative/lateral complement to fetch")
-        print("  chain  <node_id>   show reasoning chain")
+        print("  read   <node_id>   print node(s) IN FULL — complete stored text (gists live in query/fetch/logs)")
+        print("  chain  <node_id>   show the reasoning chain (parent path, 60-char hops) — full text: `read`")
         print("  edges              rebuild the typed edge graph + topic communities")
         print("  compile            generate PROTOCOL.md now")
         print("  schedule           golden-angle context manifest (--render for full output)")

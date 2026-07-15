@@ -50,6 +50,11 @@ python -m cairn orient          # prints inherited context — your memory from 
 Read it before your first tool call. Then `cairn fetch "question"` instead of
 re-reading files/history.
 
+**Gists are the index, not the text.** `fetch`/`search`/`logs` return short
+gists and capped previews; the complete stored text of any node is one step
+away — `python -m cairn read <id>` (MCP: `cairn_read`). Before relying on a
+summary of something important, read it in full.
+
 **You don't start the session — the harness does.** Each chat has its own session
 id, and the hooks stamp it as you work, so your captures and `cairn` commands all
 attach to *this* chat. A new chat is already a new session; `orient` *reads* the
@@ -87,6 +92,11 @@ python -m cairn note --speaker=user   "user wants U"
 **Not a quota** — some exchanges produce zero nodes (pure mechanical back-and-forth),
 some produce several (a dense decision with rejected alternatives). Capture by
 *salience*, not by count. Don't narrate; record what's worth remembering.
+
+**Pass complete text.** Notes store uncapped, and a summary saved as a note has
+no fuller text behind it — the summary becomes the whole memory. For a large
+artifact (an audit, a spec, a report), save it as a file and put the path in the
+note.
 
 Kinds: `decision · warning · open_item · insight · idea · hypothesis · procedure ·
 resolved · question · context_stamp · conversation_turn`.

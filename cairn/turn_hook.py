@@ -49,7 +49,10 @@ _HARNESS_USER = (
     "<system-reminder>",
 )
 
-_AGENT_MAX = 4000   # cap stored agent prose so a single turn can't bloat the vault
+# No agent-prose cap here: write_turn (capture.py) bounds the DISPLAY fields and
+# preserves the complete text via episodic_full — same lossless pattern as
+# codex_hook/importer (owner bar: full capture of whatever is said). The old
+# _AGENT_MAX=4000 pre-slice dropped long agent turns' tails at the door.
 
 
 def _salient(text: str, speaker: str) -> bool:
@@ -232,7 +235,7 @@ def main():
             atext = _text_from_content(amsg.get("content"))
             amodel = amsg.get("model") or "unknown"   # the REAL model for this turn
             if _salient(atext, "agent"):
-                write_turn(atext[:_AGENT_MAX], speaker="agent", session=session_id,
+                write_turn(atext, speaker="agent", session=session_id,
                            usage=usage, model=amodel, vault=v,
                            tool_calls=pending_tools or None)
                 captured += 1

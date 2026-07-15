@@ -149,7 +149,7 @@ def _fmt_gist(r) -> str:
     """
     Format one node as a single gist line — the parafovea.
     ~12 tokens per line vs ~40 for a verbatim row. Fuzzy-trace theory:
-    the gist is what survives; verbatim is on demand via `cairn chain <id>`.
+    the gist is what survives; verbatim is on demand via `cairn read <id>`.
     """
     kind  = (r["kind"] or "note")[:8]
     gist  = ""

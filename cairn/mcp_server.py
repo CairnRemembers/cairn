@@ -52,7 +52,8 @@ TOOLS = [
             "of only the memories/files that matter, fitted to a token budget. "
             "Call this INSTEAD of re-reading files or scrolling history — it "
             "replaces the re-reading tax with a targeted answer. Top hits come "
-            "back verbatim, the rest as gists."),
+            "back as capped previews (~1800 chars), the rest as gists — "
+            "cairn_read returns any node's complete text."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -74,7 +75,8 @@ TOOLS = [
             "cross topic boundaries — surfaces adjacent ideas and unseen "
             "connections (a past project, an old conversation, an idea from a "
             "different domain) that similarity search will never return. Use "
-            "when brainstorming, stuck, or asked for fresh angles."),
+            "when brainstorming, stuck, or asked for fresh angles. Returns "
+            "gists — cairn_read pulls any hit in full."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -90,8 +92,9 @@ TOOLS = [
     {
         "name": "cairn_search",
         "description": ("Ranked hybrid search across the whole vault. Returns "
-                        "ids + gists + scores (cheap). Use cairn_fetch to pull "
-                        "full text for the ones that matter."),
+                        "ids + gists + scores (cheap) — an index, not the text. "
+                        "Pass the ids that matter to cairn_read for their full "
+                        "text (cairn_fetch for a budgeted context pack)."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -106,7 +109,11 @@ TOOLS = [
         "description": ("Write a memory to the vault — ambient capture. Use for "
                         "decisions, insights, ideas, open items, warnings, "
                         "procedures discovered while working. The vault remembers "
-                        "across sessions and models."),
+                        "across sessions and models. Write the complete salient "
+                        "fact, decision, warning, or open item WITHOUT truncating "
+                        "it — but do not paste transcripts (turns are captured "
+                        "separately). For a large artifact, save the file and "
+                        "note its path and purpose."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -141,8 +148,10 @@ TOOLS = [
     {
         "name": "cairn_read",
         "description": ("Read specific nodes IN FULL by id — the follow-up to "
-                        "the gists that recent/search/fetch return. Accepts "
-                        "full ids or unambiguous prefixes, up to 8 per call. "
+                        "the gists that recent/search/fetch return; this is the "
+                        "verbatim layer (long turns carry their complete text "
+                        "here). Accepts full ids or unambiguous prefixes, up to "
+                        "8 per call; max_chars dials the per-node body budget. "
                         "Unlike fetch/search this needs no embeddings, so it "
                         "reads nodes written moments ago."),
         "inputSchema": {
@@ -150,6 +159,12 @@ TOOLS = [
             "properties": {
                 "ids": {"type": "array", "items": {"type": "string"},
                         "description": "node ids (or prefixes) to read"},
+                "max_chars": {"type": "integer",
+                              "description": "per-node canonical-body budget in "
+                                             "chars (default 24000; total body "
+                                             "across ids caps at max(60000, "
+                                             "this)) — raise it to pull a very "
+                                             "long turn whole, lower it to skim"},
             },
             "required": ["ids"],
         },
@@ -267,7 +282,7 @@ def _tool_search(args: dict) -> str:
     for d in rows:
         gist = d.get("gist") or (d.get("query") or "")[:80]
         out.append(f"  [{d.get('id')}] ({d.get('kind')}, {d.get('score',0):.2f}) {gist}")
-    out.append("\nuse cairn_fetch for full text of what matters.")
+    out.append("\nuse cairn_read for full text of what matters.")
     return "\n".join(out)
 
 
@@ -362,6 +377,20 @@ def _tool_read(args: dict) -> str:
     ids = [str(i).strip() for i in raw if str(i).strip()][:8]
     if not ids:
         return "cairn_read: no ids given."
+    # Per-node BODY budget (max_chars) + a total BODY budget across all ids, so
+    # eight long turns can't stack into a context bomb. "Body" is exact: the
+    # budgets meter canonical body text; small header/tags/inventory lines ride
+    # on top. The total scales with an explicit max_chars so one deliberate
+    # deep read is never blocked.
+    cap = 24000
+    try:
+        if args.get("max_chars"):
+            cap = max(200, int(args["max_chars"]))
+    except (TypeError, ValueError):
+        cap = 24000
+    total_cap = max(60000, cap)
+    spent = 0
+    skipped = []
     out = []
     for want in ids:
         rows = v.conn.execute(
@@ -384,17 +413,52 @@ def _tool_read(args: dict) -> str:
                        f"historical record, check for correction/resolved notes.")
         if r["tags"]:
             out.append(f"   tags: {r['tags']}")
-        def _block(label, text, cap=4000):
-            if not text:
-                return
-            t = text if len(text) <= cap else text[:cap] + " [... truncated]"
-            out.append(f"   {label}: {t}")
-        _block("text", r["query"])
-        if r["output_preview"] and r["output_preview"] != r["query"]:
-            _block("preview", r["output_preview"])
-        if r["episodic_text"] and r["episodic_text"] not in (r["query"], r["output_preview"]):
-            _block("episodic", r["episodic_text"])
+
+        # ONE canonical body per node — the fullest stored text, not three
+        # overlapping fields. query is a prefix of the preview, the preview a
+        # prefix of an overflowed turn's episodic text; printing all three
+        # tripled the payload with zero new information. Any field that adds
+        # real content beyond the body still prints; pure derivations don't.
+        q, p, e = r["query"] or "", r["output_preview"] or "", r["episodic_text"] or ""
+        body = max((q, p, e), key=len)
+
+        def _core(t):
+            # derived episodic text carries a short "actor said/decided: " prefix;
+            # strip it so containment checks compare actual content
+            head, sep, rest = t.partition(": ")
+            return rest if (sep and len(head) <= 40) else t
+
+        extras = [(lbl, t) for lbl, t in (("query", q), ("preview", p), ("episodic", e))
+                  if t and t is not body and t not in body and _core(t) not in body]
+
+        room = total_cap - spent
+        if room <= 0:
+            skipped.append(r["id"])
+            # unwind this node's already-appended header/status/tags lines —
+            # it gets reported once, in the budget notice instead
+            while out and out[-1].startswith("   "):
+                out.pop()
+            if out and out[-1].startswith("── ["):
+                out.pop()
+            continue
+        eff = min(cap, room)
+        t = body if len(body) <= eff else (
+            body[:eff] + f" [... truncated at {eff} chars — total "
+            f"{len(body)}; pass max_chars={len(body)} (fewer ids) for all of it]")
+        spent += len(t)
+        out.append(f"   text: {t}")
+        for lbl, extra in extras:
+            xt = extra if len(extra) <= 500 else extra[:500] + " [...]"
+            spent += len(xt)
+            out.append(f"   {lbl} (adds content beyond text): {xt}")
+        sizes = " · ".join(f"{lbl} {len(t)}c" for lbl, t in
+                           (("query", q), ("preview", p), ("episodic", e)) if t)
+        out.append(f"   fields: {sizes}")
         out.append("")
+    if skipped:
+        out.append(f"body budget {total_cap} chars reached — unread: "
+                   f"{', '.join(skipped)} (fewer ids per call, or one id with "
+                   f"a raised max_chars)")
     return "\n".join(out).rstrip()
 
 

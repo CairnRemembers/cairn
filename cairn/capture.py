@@ -38,6 +38,12 @@ from typing import Optional
 
 from cairn.vault import Vault, MicroNode
 
+# Display-slice cap for output_preview — one house number, same as
+# codex_hook.TRUNC_PREVIEW. A turn longer than this keeps its COMPLETE text via
+# episodic_full → episodic_text (lossless; owner bar: full capture of whatever
+# is said). The cap bounds only the display field, never what survives.
+PREVIEW_CAP = 8000
+
 
 def get_session() -> str:
     """Unified session — same source as __main__.py."""
@@ -146,8 +152,10 @@ def write_turn(
     speaker="user"  → what the user said, their intent, their meaning
     speaker="agent" → what the agent responded, its reasoning, its conclusions
 
-    The text is truncated to `truncate` chars for the query field
-    (the full text lives in output_preview).
+    The text is truncated to `truncate` chars for the query field.
+    output_preview holds up to PREVIEW_CAP chars; a longer turn carries its
+    COMPLETE text in episodic_full → episodic_text (the same lossless pattern
+    codex_hook and the importers use), so no turn ever loses its tail.
     Both sides are embedded into episodic vectors.
     "what did the user say about authentication?" is now queryable.
     """
@@ -177,7 +185,8 @@ def write_turn(
         session        = sess,
         kind           = "conversation_turn",
         query          = summary,
-        output_preview = text,         # full text preserved here
+        output_preview = text[:PREVIEW_CAP],   # display slice, bounded
+        episodic_full  = text if len(text) > PREVIEW_CAP else None,  # lossless tail
         parent         = parent,
         speaker        = speaker,
         model          = model if speaker == "agent" else "human",

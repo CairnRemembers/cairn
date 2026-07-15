@@ -187,6 +187,13 @@ Call `cairn_fetch` BEFORE answering whenever the user asks about:
 Never answer "I don't know about your personal context" without fetching first.
 Use `cairn_wander` when brainstorming; `cairn_recent` for "what's been going on".
 
+## READ DEEPER — gists are the index, not the text
+`search`/`recent`/`logs`/`wander` return short gists; `fetch` returns capped
+previews. The COMPLETE stored text of any node is one call away: `cairn_read`
+with the id(s) (`max_chars` dials depth). Before relying on a summary of
+something that matters — an audit, a decision, "what did X say" — read the
+full node. Never quote a gist as if it were the whole record.
+
 ## WRITE — cairn_note without being asked, when these happen
 - The user states a DECISION, preference, or plan → kind=decision
 - The user shares a durable FACT about their life/work → kind=insight

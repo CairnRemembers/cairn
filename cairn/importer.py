@@ -88,8 +88,8 @@ def _full_text(text: str) -> Optional[str]:
     """Full-fidelity text for episodic_text, ONLY when the turn overflows the
     output_preview display cap. Under the cap → None, so short turns keep the
     normal derived (capped) episodic_text and don't carry a redundant copy —
-    matching capture.py, which never sets episodic_full. Over the cap → the whole
-    string, so the tail past TRUNC_PREVIEW survives instead of being lost."""
+    the same overflow-only pattern capture.write_turn and codex_hook use. Over
+    the cap → the whole string, so the tail past TRUNC_PREVIEW survives."""
     return text if len(text) > TRUNC_PREVIEW else None
 
 

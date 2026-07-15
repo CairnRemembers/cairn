@@ -37,6 +37,7 @@ _LAWS = ("local-first - nothing leaves this machine | append-only - void, "
 
 _NAVIGATE = ("cairn fetch \"q\" before re-reading files/history | "
              "cairn wander \"topic\" for adjacent ideas | "
+             "cairn read <id> = a node IN FULL (fetch/search show gists) | "
              "note decisions/warnings as you work | "
              "full book: ~/.cairn/BOOK.md")
 
