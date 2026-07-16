@@ -126,6 +126,59 @@ def act(vault, slug: str, action: str, reason: str = "",
     return state
 
 
+def nest(vault, slug: str, parent: str, by: str = "human",
+         reason: str = "") -> dict | None:
+    """File a row UNDER an approved parent as a SEPARABLE child. Its own
+    status is unchanged (still proposed/revived — nest is not a bless); it
+    simply gains a `parent` + `filing_mode="nest"`, which lifts it out of the
+    Proposed lane and renders it as "↳ under <parent>", its own live thread.
+    One append-only node; never routes through act(), never touches ACTIONS.
+    Returns the new state dict, or None when the slug is unknown."""
+    cur = rows(vault).get(slug)
+    if not cur:
+        return None
+    state = dict(cur)
+    state.pop("as_of", None)
+    state["parent"] = str(parent)[:64]
+    state["filing_mode"] = "nest"
+    state["last_action"] = {"action": "nest", "reason": reason[:200],
+                            "by": by, "at": _now()}
+    line = (f"REGISTRY {slug} — nested under {state['parent']} by {by}"
+            f"{' — ' + reason[:120] if reason else ''}")
+    _write_row(vault, state, line)
+    return state
+
+
+def record_absorbed_filing(vault, slug: str, parent: str, by: str = "human",
+                           reason: str = "") -> dict | None:
+    """File a row by ABSORBING it into a library project (Skills & Frameworks):
+    it folds in (a projects.json alias, done by the caller) and retires to an
+    AUDIT-ONLY Filed history. This writer records ONLY the proposal row's
+    filing state — `parent`, `filing_mode="absorb"`, status `archived`. It does
+    NOT modify, archive, or void the underlying MEMORY nodes; those stay
+    `active` (the fold is an alias, never a node mutation).
+
+    One append-only node; never routes through act(), never touches ACTIONS.
+    The single write is deliberate: act() re-reads the row from the vault, so
+    pre-setting fields then calling act() would lose them — this is the only
+    correct shape. Returns the new state dict, or None when the slug is
+    unknown."""
+    cur = rows(vault).get(slug)
+    if not cur:
+        return None
+    state = dict(cur)
+    state.pop("as_of", None)
+    state["parent"] = str(parent)[:64]
+    state["filing_mode"] = "absorb"
+    state["status"] = "archived"
+    state["last_action"] = {"action": "absorb", "reason": reason[:200],
+                            "by": by, "at": _now()}
+    line = (f"REGISTRY {slug} — absorbed into {state['parent']} by {by}"
+            f"{' — ' + reason[:120] if reason else ''}")
+    _write_row(vault, state, line)
+    return state
+
+
 def compile_finish_lines(vault, path=None) -> int:
     """Compile the ledger out to FINISH-LINES.md (BOOK.md pattern: derived
     file, rerun any time; the nodes stay canonical). Returns row count."""

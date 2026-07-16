@@ -110,6 +110,80 @@ def _valid_tag(t: str) -> bool:
     return bool(t) and bool(_PROJECT_TAG_RE.match(t))
 
 
+# ── File-under helpers ───────────────────────────────────────────────────────
+# Shared by the emerging /api/garden/file-under and the registry
+# /api/garden/registry/file-under endpoints. projects.json values are
+# [label, blurb] or [label, blurb, [aliases…]]; these operate on that shape in
+# place and enforce the owner's ONE-HOME rule: a member tag belongs to a single
+# project, and a filing that would move it stops and asks (never a silent reorg).
+_SKILLS_LABEL = "Skills & Frameworks"
+
+
+def _skills_key(data: dict):
+    """The projects.json KEY of the Skills & Frameworks library (the ABSORB
+    target), resolved by its canonical label — not the label the client sends,
+    since the client sends the key. Falls back to a literal 'skills' key; None
+    when the library isn't declared, in which case nothing absorbs."""
+    for k, v in data.items():
+        if (isinstance(v, (list, tuple)) and v
+                and str(v[0]).strip() == _SKILLS_LABEL):
+            return k
+    return "skills" if "skills" in data else None
+
+
+def _aliases_of(data: dict, key: str) -> list:
+    """The alias list (3rd element) of a projects.json entry, or []."""
+    v = data.get(key)
+    if isinstance(v, list) and len(v) > 2 and isinstance(v[2], list):
+        return v[2]
+    return []
+
+
+def _alias_home_conflicts(data: dict, members: list, exclude=None) -> dict:
+    """{member: owning_key} for each member already in SOME OTHER project's
+    alias list (`exclude` skips the selected target). These are the tags a
+    filing would silently move off their current home — the one-home guard
+    surfaces them so the owner can confirm or decline the move."""
+    out: dict = {}
+    for key, v in data.items():
+        if key == exclude:
+            continue
+        aliases = (v[2] if isinstance(v, list) and len(v) > 2
+                   and isinstance(v[2], list) else [])
+        for m in members:
+            if m in aliases and m not in out:
+                out[m] = key
+    return out
+
+
+def _strip_alias(data: dict, key: str, member: str) -> bool:
+    """Remove `member` from project `key`'s alias list, in place. Returns True
+    if it was present. Only ever moves a tag to its single rightful home — no
+    project entry and no memory node is deleted."""
+    v = data.get(key)
+    if (isinstance(v, list) and len(v) > 2 and isinstance(v[2], list)
+            and member in v[2]):
+        v[2] = [a for a in v[2] if a != member]
+        return True
+    return False
+
+
+def _add_aliases(data: dict, key: str, members: list) -> None:
+    """Append members to project `key`'s alias list (add-if-absent, in place),
+    normalizing a 2-element value up to 3 elements."""
+    v = data.get(key)
+    if not isinstance(v, list) or len(v) < 2:
+        return
+    aliases = v[2] if len(v) > 2 and isinstance(v[2], list) else []
+    for m in members:
+        if m and m not in aliases:
+            aliases.append(m[:64])
+    if len(v) > 2:
+        v[2] = aliases
+    else:
+        v.append(aliases)
+
+
 # ── Emerging-project noise filter ────────────────────────────────────────────
 # The vault carries ~6k machine-tag strata (kw:/entity:/prov:/by:/stance:/claim…)
 # that are retrieval plumbing, NOT projects. They must never be offered as
@@ -762,13 +836,19 @@ def register_garden(app, vault, current_session_fn) -> None:
                 return JSONResponse(
                     {"error": f"'{proj}' has an unexpected shape"},
                     status_code=500)
-            aliases = value[2] if len(value) > 2 and isinstance(value[2], list) else []
-            if tag not in aliases:
-                aliases.append(tag[:64])
-            if len(value) > 2:
-                value[2] = aliases
-            else:
-                value.append(aliases)
+            # One-home arbitration (shared with the registry file-under): if the
+            # tag already lives under ANOTHER project, don't silently move it —
+            # stop and ask; only an explicit confirm_move performs the move.
+            confirm = bool(payload.get("confirm_move"))
+            other = _alias_home_conflicts(data, [tag], exclude=proj)
+            if other and not confirm:
+                return JSONResponse(
+                    {"error": "one_home_conflict", "conflicts": other},
+                    status_code=409)
+            if other and confirm:
+                for m, owner_key in other.items():
+                    _strip_alias(data, owner_key, m)
+            _add_aliases(data, proj, [tag])
             pf.write_text(json.dumps(data, indent=2, ensure_ascii=False),
                           encoding="utf-8")
         except Exception as exc:
@@ -988,6 +1068,132 @@ def register_garden(app, vault, current_session_fn) -> None:
                         "warning": f"blessed in ledger, projects.json write "
                                    f"failed: {exc}"}
         return {"state": state}
+
+    @app.post("/api/garden/registry/file-under")
+    async def garden_registry_file_under(payload: dict, request: Request):
+        """File a PROPOSED registry row under a target project — the TARGET
+        chooses the operation:
+          • Skills & Frameworks  → ABSORB: fold the row (+ its aliases) into the
+            Skills library and retire it to an AUDIT-ONLY Filed history.
+          • any other approved project → NEST: the row LEAVES Proposed and
+            becomes a SEPARABLE child under that parent — no alias fold; the
+            link lives in the registry `parent` field.
+        One-home is owner-arbitrated: a filing that would move a member off
+        ANOTHER project — or convert an alias already folded into the SELECTED
+        parent — stops and asks (409 + conflict set); only an explicit
+        confirm_move:true performs that single projects.json move."""
+        if not _rate_ok(request):
+            return JSONResponse({"error": "rate limited"}, status_code=429)
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "bad payload"}, status_code=400)
+        slug    = str(payload.get("slug") or "").strip()
+        project = str(payload.get("project") or "").strip()
+        confirm = bool(payload.get("confirm_move"))
+        if not slug or not project:
+            return JSONResponse({"error": "slug and project required"},
+                                status_code=400)
+        try:
+            from cairn.registry import (rows as _reg_rows, nest as _reg_nest,
+                                        record_absorbed_filing as _reg_absorb)
+            cur = _reg_rows(vault).get(slug)
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        if not cur:
+            return JSONResponse({"error": f"unknown slug '{slug}'"},
+                                status_code=400)
+        # only an UNDECIDED row is fileable — a passed/archived/blessed row must
+        # be revived first (Proposed is the undecided lane; filing is a verdict).
+        if cur.get("status") not in ("proposed", "revived"):
+            return JSONResponse(
+                {"error": "not fileable", "status": cur.get("status")},
+                status_code=409)
+        # never double-file
+        if cur.get("parent") or cur.get("filing_mode"):
+            return JSONResponse({"error": "already filed"}, status_code=409)
+        pf = Path.home() / ".cairn" / "projects.json"
+        try:
+            data = {}
+            if pf.exists():
+                try:
+                    data = json.loads(pf.read_text(encoding="utf-8"))
+                    if not isinstance(data, dict):
+                        data = {}
+                except Exception:
+                    data = {}
+            if project not in data:
+                return JSONResponse(
+                    {"error": f"'{project}' is not a declared project"},
+                    status_code=404)
+            if project == slug:
+                return JSONResponse(
+                    {"error": "cannot file a row under itself"},
+                    status_code=409)
+            # fold members = slug + aliases; valid, deduped, minus any project key
+            members, seen = [], set()
+            for m in [slug] + list(cur.get("aliases") or []):
+                m = (m or "").strip()
+                if m and _valid_tag(m) and m not in seen and m not in data:
+                    seen.add(m)
+                    members.append(m[:64])
+            if not members:
+                return JSONResponse({"error": "no valid members to file"},
+                                    status_code=400)
+            mode = "absorb" if project == _skills_key(data) else "nest"
+            # one-home: members already living under ANOTHER project
+            other = _alias_home_conflicts(data, members, exclude=project)
+            # NEST self-parent: members already folded into the SELECTED parent
+            already_folded = {}
+            if mode == "nest":
+                parent_aliases = _aliases_of(data, project)
+                for m in members:
+                    if m in parent_aliases:
+                        already_folded[m] = project
+            # ONE truthful confirmation: list EVERY consequence before the move —
+            # tags that would move off another project (`move`) AND tags already
+            # folded into the selected parent that would convert to a separable
+            # child (`convert`). The owner sees the full picture in a single prompt.
+            if (other or already_folded) and not confirm:
+                return JSONResponse({
+                    "error": "confirm_move_required",
+                    "move": other,              # {member: current owner key}
+                    "convert": already_folded,  # {member: selected project}
+                }, status_code=409)
+            # ── writes: at most ONE projects.json write (owner-confirmed moves
+            #    + the absorb fold); nest with no collision writes nothing here.
+            wrote_projects = False
+            if other and confirm:
+                for m, owner_key in other.items():
+                    _strip_alias(data, owner_key, m)
+                wrote_projects = True
+            if already_folded and confirm:
+                for m in already_folded:
+                    _strip_alias(data, project, m)
+                wrote_projects = True
+            if mode == "absorb":
+                _add_aliases(data, project, members)
+                wrote_projects = True
+            if wrote_projects:
+                pf.parent.mkdir(parents=True, exist_ok=True)
+                pf.write_text(json.dumps(data, indent=2, ensure_ascii=False),
+                              encoding="utf-8")
+                _reload_projects()
+        except Exception as exc:
+            return JSONResponse({"error": f"write failed: {exc}"},
+                                status_code=500)
+        # registry write — one append-only node; guarded above against re-file
+        try:
+            if mode == "absorb":
+                state = _reg_absorb(vault, slug, project, by="human")
+            else:
+                state = _reg_nest(vault, slug, project, by="human")
+        except Exception as exc:
+            return JSONResponse({"error": f"write failed: {exc}"},
+                                status_code=500)
+        if state is None:
+            return JSONResponse({"error": f"unknown slug '{slug}'"},
+                                status_code=400)
+        return {"slug": slug, "project": project,
+                "filing_mode": mode, "filed": True}
 
     @app.get("/api/garden/gather")
     def garden_gather(q: str = ""):
@@ -4474,8 +4680,20 @@ async function renderProjects() {
   // owner's verdict, worked at his own pace — bless regroups, pass keeps.
   let reg = { rows: [] };
   try { reg = await fetch('/api/garden/registry').then(r => r.json()); } catch (e) {}
-  const proposed = (reg.rows || []).filter(r => r.status === 'proposed' || r.status === 'revived');
-  const passed   = (reg.rows || []).filter(r => r.status === 'passed' || r.status === 'archived');
+  // §3D lane membership — every registry row lands in exactly ONE place:
+  //  · Proposed: undecided rows only — a FILED row has a parent and drops out.
+  //  · passed/archived list: excludes absorbed rows (they live in Filed history).
+  //  · nestKids: nested separable children, shown under their approved parent.
+  //  · absorbed: folded into Skills & Frameworks — audit-only Filed history.
+  const proposed = (reg.rows || []).filter(r => (r.status === 'proposed' || r.status === 'revived') && !r.parent);
+  const passed   = (reg.rows || []).filter(r => (r.status === 'passed' || r.status === 'archived') && r.filing_mode !== 'absorb');
+  const nestKids = (reg.rows || []).filter(r => r.parent && r.filing_mode === 'nest' && (r.status === 'proposed' || r.status === 'revived'));
+  const absorbed = (reg.rows || []).filter(r => r.filing_mode === 'absorb');
+  // §3A: build the file-under options ONCE, before propHTML and the pcard child
+  // area that both reference it (fixes the first-render empty dropdown). Targets
+  // = every approved project; picking Skills & Frameworks ABSORBS, any other NESTS.
+  const fileUnderOpts = '<option value="">file under…</option>' +
+    approved.map(x => `<option value="${esc(x.tag)}">${esc(x.name)}</option>`).join('');
   const propHTML = proposed.map(r => `
     <div class="proj" style="border-style:dashed">
       <div class="name">${esc(r.name)} <span class="emerging-chip">PROPOSED</span>
@@ -4486,6 +4704,14 @@ async function renderProjects() {
         <button class="abtn" style="border-color:var(--moss);color:var(--moss);font-weight:600"
           onclick="registryAct(event,'${jesc(r.slug)}','bless')">✓ make it a project</button>
         <button class="abtn" onclick="registryAct(event,'${jesc(r.slug)}','pass')">– not a project</button>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <select id="pfu-${esc(r.slug)}" class="promote-in" style="font-size:12.5px;padding:4px 8px;width:auto;max-width:240px;flex:0 1 240px"
+          title="file this proposal — Skills & Frameworks absorbs it; any other project nests it as a separable child"
+          onclick="event.stopPropagation()" onchange="propFilePick(event,'${jesc(r.slug)}')">${fileUnderOpts}</select>
+        <button id="pfu-go-${esc(r.slug)}" class="abtn" disabled
+          title="file this proposal under the selected project"
+          onclick="propFileGo(event,'${jesc(r.slug)}')">🗂 file under</button>
       </div>
     </div>`).join('');
   $('main').innerHTML = `
@@ -4507,15 +4733,6 @@ async function renderProjects() {
       <button class="abtn" onclick="doGather()">${icon('research','🔎','s16')} gather</button>
     </div>
     <div id="gather-out"></div>
-    ${(() => {
-      // G2: emerging families need TWO doors — promote (it IS a project) or
-      // file under an existing one (it BELONGS to a project: the trademark
-      // research was Cairn work wearing its own tag). Options built once.
-      const declared = (d.projects || []).filter(x => !x.emerging);
-      window._fileUnderOpts = '<option value="">file under…</option>' +
-        declared.map(x => `<option value="${esc(x.tag)}">${esc(x.name)}</option>`).join('');
-      return '';
-    })()}
     ${(() => { const pcard = p => {
       const m = p.maturity, tot = Math.max(1, m.seedling + m.budding + m.evergreen);
       const aliases = p.aliases || [];
@@ -4540,11 +4757,24 @@ async function renderProjects() {
           <div class="m-ever" style="width:${m.evergreen/tot*100}%"></div>
         </div>
         ${p.last_gist ? `<div class="lastline">latest: ${esc(p.last_gist)}</div>` : ''}
+        ${!p.emerging ? (() => {
+          const kids = nestKids.filter(k => k.parent === p.tag);
+          if (!kids.length) return '';
+          return `<div style="margin-top:8px;border-top:1px dashed var(--line,#3a3a3a);padding-top:6px;display:flex;flex-direction:column;gap:4px">
+            ${kids.map(k => `<div style="display:flex;gap:8px;align-items:center;font-size:12.5px">
+              <span title="filed here as a separable child — its notes are NOT folded into ${esc(p.name)}'s totals">↳ ${esc(k.name)} · ${k.evidence} notes</span>
+              <span style="margin-left:auto;display:flex;gap:6px">
+                <button class="abtn" style="padding:2px 8px;font-size:11.5px;border-color:var(--moss);color:var(--moss)" onclick="registryAct(event,'${jesc(k.slug)}','bless')" title="promote this child to its own declared project">make its own</button>
+                <button class="abtn" style="padding:2px 8px;font-size:11.5px" onclick="registryAct(event,'${jesc(k.slug)}','pass')" title="set aside — kept, revivable">– pass</button>
+              </span>
+            </div>`).join('')}
+          </div>`;
+        })() : ''}
         ${p.emerging ? `<div class="proj-actions" style="display:flex;flex-direction:column;align-items:stretch;gap:8px">
           <div style="display:flex;gap:8px;align-items:center">
             <select id="fu-${esc(p.tag)}" class="promote-in" style="font-size:12.5px;padding:4px 8px;width:auto;max-width:240px;flex:0 1 240px"
               title="this belongs to an existing project — pick it, then click file"
-              onclick="event.stopPropagation()" onchange="fileUnderPick(event,'${jesc(p.tag)}')">${window._fileUnderOpts || ''}</select>
+              onclick="event.stopPropagation()" onchange="fileUnderPick(event,'${jesc(p.tag)}')">${fileUnderOpts}</select>
             <button id="fu-go-${esc(p.tag)}" class="abtn" disabled
               title="file this emerging topic under the selected project"
               onclick="fileUnderGo(event,'${jesc(p.tag)}')">🗂 file</button>
@@ -4566,6 +4796,11 @@ async function renderProjects() {
       const hE = emerging.length ? `<div class="proj-sec">Emerging <span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400">${emerging.length} ${emerging.length === 1 ? 'topic' : 'topics'} with real mass — promote to declare</span></div>` : '';
       return hA + approved.map(pcard).join('') + prop + hE + emerging.map(pcard).join('') + empty;
     })()}
+    ${absorbed.length ? `<details style="margin:4px 0 10px">
+      <summary class="hub-sub" style="cursor:pointer">▸ ${absorbed.length} filed into Skills & Frameworks — audit history</summary>
+      <div style="padding:6px 0 2px">${absorbed.map(r => `
+        <div style="font-size:12.5px;opacity:.75;padding:2px 0">“${esc(r.name)}” → absorbed into Skills & Frameworks${r.last_action && r.last_action.at ? ' · ' + when(r.last_action.at) : ''}</div>`).join('')}</div>
+    </details>` : ''}
     ${passed.length ? `<div class="hub-sub" style="cursor:pointer;margin:4px 0 10px" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? '' : 'none'">▸ ${passed.length} passed/archived proposal${passed.length === 1 ? '' : 's'} — kept, revivable</div>
     <div style="display:none">${passed.map(r => `
       <div class="proj" style="opacity:.65">
@@ -4647,7 +4882,7 @@ function fileUnderPick(e, tag) {
   go.style.fontWeight  = armed ? '600' : '';
 }
 
-async function fileUnderGo(e, tag) {
+async function fileUnderGo(e, tag, confirmMove) {
   if (e) e.stopPropagation();
   const sel = document.getElementById('fu-' + tag);
   const go  = document.getElementById('fu-go-' + tag);
@@ -4655,17 +4890,84 @@ async function fileUnderGo(e, tag) {
   if (!proj) { toast('pick a project first'); return; }
   if (sel) sel.disabled = true;
   if (go)  go.disabled  = true;
+  const body = { tag, project: proj };
+  if (confirmMove) body.confirm_move = true;
   const r = await fetch('/api/garden/file-under', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tag, project: proj })
+    body: JSON.stringify(body)
   }).then(r => r.json()).catch(() => ({ error: 'network — is the server up?' }));
+  const reArm = () => { if (sel) sel.disabled = false; if (go) go.disabled = false; };
+  // one-home is owner-arbitrated: never move a tag off its project silently
+  if (r.error === 'one_home_conflict') {
+    const moves = Object.entries(r.conflicts || {})
+      .map(([m, p]) => `• "${m}" is currently under "${p}"`).join('\n');
+    if (confirm(`Filing this would MOVE it off its current project — each tag has one home:\n\n${moves}\n\nMove to "${proj}"?`)) {
+      return fileUnderGo(null, tag, true);
+    }
+    reArm(); toast('left as-is — nothing moved'); return;
+  }
   if (r.error) {
     toast('file-under failed: ' + r.error);
-    if (sel) sel.disabled = false;
-    if (go)  go.disabled  = false;
+    reArm();
     return;
   }
   toast(`✓ '${tag}' filed under '${r.project}' — its memories now count there`);
+  renderProjects();
+}
+
+// Proposed-lane file-under (TARGET chooses the operation, server-side): the
+// dropdown ARMS, the button COMMITS — same two-step as emerging. The client is
+// mode-agnostic; the server decides absorb vs nest and returns which happened.
+// A one-home collision (or an already-folded self-parent nest) comes back as a
+// 409 with {conflicts}; we show the owner exactly what would move and only
+// re-file with confirm_move on an explicit yes.
+function propFilePick(e, slug) {
+  if (e) e.stopPropagation();
+  const sel = document.getElementById('pfu-' + slug);
+  const go  = document.getElementById('pfu-go-' + slug);
+  if (!sel || !go) return;
+  const armed = !!sel.value;
+  go.disabled = !armed;
+  go.style.borderColor = armed ? 'var(--moss)' : '';
+  go.style.color       = armed ? 'var(--moss)' : '';
+  go.style.fontWeight  = armed ? '600' : '';
+}
+
+async function propFileGo(e, slug, confirmMove) {
+  if (e) e.stopPropagation();
+  const sel = document.getElementById('pfu-' + slug);
+  const go  = document.getElementById('pfu-go-' + slug);
+  const proj = sel ? sel.value : '';
+  if (!proj) { toast('pick a project first'); return; }
+  if (sel) sel.disabled = true;
+  if (go)  go.disabled  = true;
+  const body = { slug, project: proj };
+  if (confirmMove) body.confirm_move = true;
+  const r = await fetch('/api/garden/registry/file-under', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(r => r.json()).catch(() => ({ error: 'network — is the server up?' }));
+  const reArm = () => { if (sel) sel.disabled = false; if (go) go.disabled = false; };
+  if (r.error === 'confirm_move_required') {
+    const move = Object.entries(r.move || {});
+    const conv = Object.entries(r.convert || {});
+    const lines = [];
+    if (move.length) {
+      lines.push(`These tag(s) will MOVE to "${proj}" — each belongs to one project:`);
+      move.forEach(([m, p]) => lines.push(`  • "${m}" — currently under "${p}"`));
+    }
+    if (conv.length) {
+      if (lines.length) lines.push('');
+      lines.push(`These are already folded into "${proj}" and will convert to a separable child:`);
+      conv.forEach(([m]) => lines.push(`  • "${m}"`));
+    }
+    if (confirm(lines.join('\n') + `\n\nProceed?`)) { return propFileGo(null, slug, true); }
+    reArm(); toast('left as-is — nothing moved'); return;
+  }
+  if (r.error) { toast('file-under failed: ' + r.error); reArm(); return; }
+  toast(r.filing_mode === 'absorb'
+    ? `✓ '${slug}' absorbed into Skills & Frameworks — audit-logged`
+    : `✓ '${slug}' nested under '${r.project}' — now a separable child`);
   renderProjects();
 }
 
