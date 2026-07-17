@@ -379,7 +379,17 @@ def _capture(payload_raw: str, deadline: float) -> int:
     vault open or a write would push past it, we bail to the chain rather than
     delay Codex. Raises nothing the caller must handle — but the caller still
     wraps it, belt-and-suspenders, because fail-safe is the whole contract."""
-    import time
+    import os, time
+
+    # ── capture mute: per-chat env switch, or global pause marker ─────────────
+    # Same off-switch as the Claude hooks (CAIRN_CAPTURE=0 / ~/.cairn/CAPTURE_OFF).
+    # A muted chat or a global pause writes NOTHING to the vault. RETURN, don't
+    # exit — main() must STILL run the chain so Codex's own notify plumbing is
+    # never affected. (codex-hook survived `cairn disconnect` before this gate.)
+    if os.environ.get("CAIRN_CAPTURE") == "0":
+        return 0
+    if (CAIRN_HOME / "CAPTURE_OFF").exists():
+        return 0
 
     # ── parse ────────────────────────────────────────────────────────────────
     try:

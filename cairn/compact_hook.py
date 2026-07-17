@@ -35,6 +35,17 @@ def main():
     except Exception:
         event = {}
 
+    # ── capture mute: per-chat env switch, or global pause marker ─────────────
+    # Lets a user say "don't write THIS chat to my brain" even under global
+    # capture (CAIRN_CAPTURE=0), or pause capture everywhere (cairn capture off).
+    # Same gate as hook.py / prompt_hook.py / turn_hook.py — a compaction must not
+    # be a hole in the off-switch: on mute this hook writes NOTHING (no stamp, no
+    # protocol compile), matching the other capture hooks exactly.
+    if os.environ.get("CAIRN_CAPTURE") == "0":
+        sys.exit(0)
+    if (Path.home() / ".cairn" / "CAPTURE_OFF").exists():
+        sys.exit(0)
+
     session_id = event.get("session_id") or os.environ.get("CLAUDE_SESSION_ID", "unknown")
 
     from cairn.vault import Vault, MicroNode

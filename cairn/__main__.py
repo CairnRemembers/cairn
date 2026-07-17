@@ -634,15 +634,25 @@ def cmd_orient(args: list[str]) -> None:
                     return (False, 0.0)
             protocol = max(all_protos, key=_proto_score)
 
+    # capture mute — same off-switch as the capture hooks (CAIRN_CAPTURE=0 /
+    # ~/.cairn/CAPTURE_OFF). Reading/injection is NEVER muted: orient must still
+    # show the model its inherited context. Only the vault WRITE orient does —
+    # the per-session context_stamp — is skipped, so a muted session start does
+    # not accumulate a node.
+    muted = (os.environ.get("CAIRN_CAPTURE") == "0"
+             or (Path.home() / ".cairn" / "CAPTURE_OFF").exists())
+
     if not protocol.exists():
         print("cairn: no PROTOCOL.md found — starting fresh")
-        from cairn.capture import write_stamp
-        write_stamp("new session — no prior context")
+        if not muted:
+            from cairn.capture import write_stamp
+            write_stamp("new session — no prior context")
         return
 
-    # ── write context_stamp node (vault record) ───────────────────────────────
+    # ── write context_stamp node (vault record) — skipped when capture muted ───
     vault = Vault()
-    node  = session_intent_from_protocol(protocol, session, vault)
+    if not muted:
+        session_intent_from_protocol(protocol, session, vault)
 
     # ── print inherited context directly for the model to read ────────────────
     _print_orient_digest(protocol)
