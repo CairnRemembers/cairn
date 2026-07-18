@@ -67,8 +67,8 @@ cd cairn
 # Windows:      .\install.ps1      (blocked? powershell -ExecutionPolicy Bypass -File .\install.ps1)
 # macOS/Linux:  ./install.sh
 ```
-The installer finds Python 3.11+, installs everything (first run downloads PyTorch — a
-few minutes), and checks itself.
+The installer finds Python 3.11+, installs everything (first run downloads PyTorch — the
+lean CPU build on Linux/Windows, a few minutes), and checks itself.
 
 **3 — Wire up your AI.** This is where memory actually turns on, and **each AI needs
 different wiring** — a `y` in setup finishes the job for Claude Code, but *not* for
@@ -177,6 +177,11 @@ surfaces have **no ambient capture**; what you ask the AI to `cairn_note` is wha
 
 **By hand** (what the installer runs):
 ```bash
+# Linux / Windows: install the CPU-only PyTorch first, or pip pulls a ~4.6 GB CUDA
+# stack you don't need. (Want a GPU build? Install your torch first, then run the
+# line below — it's preserved.) macOS: skip this line — its default wheel is CPU/MPS.
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
 pip install -e ".[all]"      # package + embedder + dashboard
 ```
 **Lighter builds:**

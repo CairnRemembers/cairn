@@ -15,7 +15,7 @@ generations. **Nothing leaves your machine.**
 
 ## Before you set out
 - **Python 3.11+** — check with `python --version`
-- ~**1 GB** free disk — mostly PyTorch (the embedder); the model itself downloads once, on first use
+- ~**1.5 GB** free disk — mostly PyTorch (the CPU build; the installer avoids the multi-GB CUDA stack). The ~80 MB embedder model downloads once, on first use
 - **Windows:** if any output looks garbled, prefix commands with `python -X utf8 -m cairn …`
   (the console needs UTF-8 to print Cairn's maps). The installer already does this for you.
 
@@ -40,6 +40,10 @@ From the `cairn` folder:
 
 Prefer to do it by hand? That's all the script does:
 ```bash
+# Linux / Windows: CPU-only PyTorch first, or pip pulls a ~4.6 GB CUDA stack you
+# don't need (GPU build? install your torch first — it's kept). macOS: skip this line.
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
 pip install -e ".[all]"      # the package + embedder + dashboard
 ```
 Lighter builds: `".[embeddings]"` (no dashboard) · `".[dashboard]"` (no embedder).
