@@ -211,6 +211,98 @@ def _family_key(tag: str) -> str:
     return s
 
 
+# ── read-only triage presentation (Gate 2) ───────────────────────────────────
+# Grouping only. The classifier in cairn/triage.py already ruled on every family;
+# nothing here decides anything, files anything, or writes anything — it says which
+# drawer a card renders in. Kept at module level (pure, no vault) so it is testable
+# without standing up the app, and so garden.py holds NO import of cairn.triage.
+_TRIAGE_SECTIONS = ("emerging", "likely_under", "skills", "filtered", "review")
+
+
+def _triage_section_of(card: dict) -> str:
+    """Which of the five sections a triage card belongs to, or '' if none claims it.
+
+    Order is load-bearing. A Stage-2 card's disposition also begins with 'needs semantic
+    review', while 'likely non-project — confirm' is a decided STAGE-1 verdict — so the
+    stage test has to sit between the Stage-1 prefixes and the filtered prefixes."""
+    d = str(card.get("disposition") or "")
+    if d.startswith(("STANDALONE", "NEW PROJECT")):
+        return "emerging"
+    if d.startswith(("project-specific skill", "global skill")):
+        return "skills"
+    if d.startswith(("project child", "cluster -> children")):
+        return "likely_under"
+    if d.startswith("alias/compound"):
+        # S1.5a — 'these two tags are one topic'. A decided STAGE-1 verdict, so it belongs
+        # with the other filtered confirmations (labeled 'alias / same topic' in the UI),
+        # NOT in `unsectioned`, which stays a safety alarm for verdicts no section claims.
+        return "filtered"
+    if card.get("stage") == 2:
+        return "review"
+    if d.startswith(("non-project", "likely non-project")):
+        return "filtered"
+    return ""
+
+
+def _triage_sections(d: dict, visible: set | None = None) -> dict:
+    """Reshape a triage_data() payload into the five read-only sections the tab renders.
+
+    `visible` is the set of family keys the tab is currently showing as emerging — i.e.
+    everything the owner has NOT hidden with 'not a project' (and anything that has since
+    re-surfaced). The classifier has no concept of dismissal, by design: dismissing writes
+    no node, so a pure reader of the vault cannot see it. Without this filter Gate 2 would
+    quietly resurrect every card he ever hid, in drawers he never asked to see them in —
+    breaking a control this gate is required to preserve. A cluster survives if ANY member
+    family is still visible.
+
+    S1.5a alias/compound ('these two tags are the same topic') is a reachable Stage-1
+    verdict; it routes into Filtered topics labeled 'alias / same topic' (see
+    _triage_section_of), so it is named honestly rather than dropped or misfiled.
+
+    `unsectioned` is therefore a deliberate escape hatch, not defensive padding — an error
+    alarm for any verdict no section claims. In normal operation it stays empty; a card
+    landing here means a supported disposition lost its home, and the page says so out loud
+    — surfaced, never dropped.
+
+    Counts are computed from the payload, never pinned to a calibration snapshot: the
+    vault is live and these numbers move as real work lands."""
+    out: dict = {k: [] for k in _TRIAGE_SECTIONS}
+    unsectioned: list = []
+    hidden = 0
+    for c in (d.get("cards") or []):
+        members = c.get("members") or [c.get("tag") or ""]
+        if visible is not None:
+            fams = {_family_key(m) for m in members}
+            if not (fams & visible):
+                hidden += 1
+                continue
+        sec = _triage_section_of(c)
+        if sec == "filtered" and str(c.get("disposition") or "").startswith("alias/compound"):
+            # Name the alias/compound verdict in the Filtered drawer so it does not read as
+            # a plain 'not a project' filter. Copied, never mutated in place.
+            c = {**c, "section_label": "alias / same topic"}
+        elif sec == "emerging" and visible is not None:
+            # The legacy display card is located through ANY still-visible cluster member,
+            # not only the exact headline — a dismissed headline must not blank a card whose
+            # other members are still shown. `members` is highest-support first, so this
+            # prefers the headline and falls back in support order. Only emitted when it
+            # differs from the headline, so the common case carries no extra field.
+            dt = next((m for m in members if _family_key(m) in visible), None)
+            if dt is not None and dt != c.get("tag"):
+                c = {**c, "display_tag": dt}
+        (out[sec] if sec else unsectioned).append(c)
+    section_counts = {k: len(v) for k, v in out.items()}
+    return {"counts": dict(d.get("counts") or {}), "sections": out,
+            "section_counts": section_counts,
+            # visible_cards = the cards actually shown in the five sections (raw classified
+            # minus dismissed minus any unsectioned). counts.cards stays the RAW total, so
+            # visible_cards + hidden_by_dismiss + len(unsectioned) == counts.cards always,
+            # and == counts.cards - hidden_by_dismiss when unsectioned is empty (the norm).
+            "visible_cards": sum(section_counts.values()),
+            "hidden_by_dismiss": hidden,
+            "unsectioned": unsectioned}
+
+
 def _gather_norm(s: str) -> str:
     """Normalize for the deep-gather CONTAINS match: lowercase, strip one
     machine prefix, drop every non-alphanumeric — so a human spelling
@@ -550,9 +642,13 @@ def register_garden(app, vault, current_session_fn) -> None:
         """).fetchall()
         return {"nodes": [_node_dict(r) for r in rows]}
 
-    @app.get("/api/garden/projects")
-    def garden_projects():
-        """The human home view: projects with status rollups."""
+    def _projects_payload(with_triage: bool = False) -> dict:
+        """The Projects payload. Split out of the endpoint so the triage pass is OPTIONAL.
+
+        garden_dismiss_project() needs the legacy emerging cards for its snapshot, and it
+        is a WRITE path: making it pay for a second full-vault classification it never
+        reads would be pure cost on every dismiss click. The public GET asks for triage;
+        dismiss does not."""
         # gather nodes per tag in one pass
         by_tag: dict[str, list] = {}
         for r in vault.conn.execute(
@@ -673,7 +769,23 @@ def register_garden(app, vault, current_session_fn) -> None:
                    "dismissed_at": (v.get("dismissed_at") or ""),
                    "count": (v.get("count") or 0)}
                   for k, v in dismissed.items() if k not in emerging_keys]
-        return {"projects": projects, "dismissed": hidden}
+        out = {"projects": projects, "dismissed": hidden}
+        if with_triage:
+            # Function-local BY DESIGN. cairn.triage imports cairn.garden for family
+            # identity (_family_key and the denylist), so a module-level import here
+            # would be a hard circular import. Deferring to call time keeps the module
+            # graph one-way (triage -> garden); the direction itself is a Gate 3 call.
+            from cairn.triage import triage_data
+            # emerging_keys = the families the tab is showing right now, so a family the
+            # owner hid stays hidden in the triage drawers too.
+            out["triage"] = _triage_sections(triage_data(vault), emerging_keys)
+        return out
+
+    @app.get("/api/garden/projects")
+    def garden_projects():
+        """The human home view: projects with status rollups, plus the read-only triage
+        sections. Purely additive — `projects` and `dismissed` are unchanged."""
+        return _projects_payload(with_triage=True)
 
     def _like(term: str) -> str:
         """Escape LIKE wildcards in user-supplied input. Pair with ESCAPE '\\'.
@@ -969,7 +1081,9 @@ def register_garden(app, vault, current_session_fn) -> None:
         # Authoritative snapshot from the LIVE emerging computation — never trust
         # a client-supplied count. Find the family this tag belongs to right now.
         snap_count, snap_last = 0, ""
-        for p in garden_projects()["projects"]:
+        # _projects_payload() and NOT garden_projects(): the snapshot only reads the
+        # legacy card's total/last_ts, so this write path skips the triage pass entirely.
+        for p in _projects_payload()["projects"]:
             if p.get("emerging") and _family_key(p["tag"]) == key:
                 snap_count = int(p.get("total") or 0)
                 snap_last  = str(p.get("last_ts") or "")
@@ -3075,11 +3189,6 @@ GARDEN_HTML = r"""<!DOCTYPE html>
   body:not([data-theme='dusk']) .proj-sec {
     border-image: url('/assets/pb-dawn/frame.png') 20 fill / 16px stretch;
   }
-  /* Emerging drawer: the framed section header IS the toggle (click to open). */
-  .proj-drawer > summary { list-style: none; cursor: pointer; }
-  .proj-drawer > summary::-webkit-details-marker { display: none; }
-  .proj-drawer > summary::after { content: ' ▸'; font-weight: 700; }
-  .proj-drawer[open] > summary::after { content: ' ▾'; }
   .reply-row { display: flex; gap: 8px; margin-top: 14px; }
   .reply-row input {
     flex: 1; background: var(--card); color: var(--ink);
@@ -3105,6 +3214,31 @@ GARDEN_HTML = r"""<!DOCTYPE html>
   .proj .lastline { margin-top: 10px; font-size: 12.5px; color: var(--muted); font-style: italic; }
   .emerging-chip { font-size: 10px; color: var(--amber); border: 1px solid var(--amber);
                    border-radius: 5px; padding: 1px 7px; letter-spacing: 1px; }
+  /* ── read-only triage drawers (Gate 2) — caret idiom mirrors .book-older ── */
+  .triage-drawer {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px 18px; margin-bottom: 10px;
+  }
+  .triage-drawer summary { cursor: pointer; font-size: 13px; color: var(--muted);
+    font-weight: 600; padding: 2px 0; user-select: none; list-style: none; }
+  .triage-drawer summary::-webkit-details-marker { display: none; }
+  .triage-drawer summary:hover { color: var(--moss); }
+  .triage-drawer summary::before { content: '▸ '; font-size: 11px; }
+  .triage-drawer[open] summary::before { content: '▾ '; }
+  .triage-body { padding: 8px 0 2px; }
+  .triage-group { border-left: 2px solid var(--line); padding-left: 12px; margin: 10px 0; }
+  .triage-gh { font-family: Georgia, serif; font-size: 14px; color: var(--ink); margin-bottom: 2px; }
+  .triage-row { padding: 6px 0; border-top: 1px dashed var(--line); }
+  .triage-row:first-child { border-top: none; }
+  .triage-h { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12.5px; }
+  .triage-tag { font-weight: 700; color: var(--ink); }
+  .triage-why { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+  .triage-ev { font-size: 11.5px; color: var(--muted); opacity: .75; margin-top: 2px; font-style: italic; }
+  .triage-strip { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
+  .triage-mem { font-size: 12.5px; color: var(--muted); display: flex; gap: 6px;
+                align-items: center; flex-wrap: wrap; margin-bottom: 5px; }
+  .triage-warn { border: 1px solid var(--terra); color: var(--terra); border-radius: 8px;
+                 padding: 8px 12px; margin: 8px 0; font-size: 12.5px; }
   .proj-actions { margin-top: 12px; }
   .abtn:disabled { opacity: .45; cursor: default; }
   .promote-form { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 10px; }
@@ -4673,6 +4807,11 @@ async function markDone(e, id) {
 
 async function renderProjects() {
   const d = await fetch('/api/garden/projects').then(r => r.json());
+  // Gate 2: the read-only classifier verdicts. Additive — if an older server sends no
+  // triage key, every drawer below simply renders empty and the tab still works.
+  const tri = d.triage || {};
+  const sec = tri.sections || {};
+  const scount = tri.section_counts || {};
   // owner's ordering: most-recently-worked first (the server's order),
   // flippable to A–Z; the choice persists like the theme does.
   if (projSort === 'az')
@@ -4738,9 +4877,13 @@ async function renderProjects() {
       <button class="abtn" onclick="doGather()">${icon('research','🔎','s16')} gather</button>
     </div>
     <div id="gather-out"></div>
-    ${(() => { const pcard = p => {
+    ${(() => { const pcard = (p, tri) => {
       const m = p.maturity, tot = Math.max(1, m.seedling + m.budding + m.evergreen);
       const aliases = p.aliases || [];
+      // tri = this family's triage card, passed only for emerging candidates. Its n is
+      // the UNIQUE UNION across the whole cluster — the honest count when several tags
+      // are one topic. p.total only knows the headline family (SpotCMYK: 33 vs 35).
+      const mem = tri ? tri.n : p.total;
       return `
       <div class="proj">
         <div class="name" onclick="renderProject('${jesc(p.tag)}')" style="cursor:pointer">${esc(p.name)}
@@ -4753,7 +4896,7 @@ async function renderProjects() {
           ${p.warnings ? `<span class="pbadge warn">${icon('warning','⚠','s16')} ${p.warnings}</span>` : ''}
           <span class="pbadge">${p.decisions} decisions</span>
           <span class="pbadge">${p.procedures} how-tos</span>
-          <span class="pbadge">${p.total} memories</span>
+          <span class="pbadge">${mem} memories</span>
           ${aliases.length ? `<span class="pbadge" title="spelling variants folded in">+${aliases.length} ${aliases.length===1?'variant':'variants'}</span>` : ''}
         </div>
         <div class="matbar">
@@ -4762,6 +4905,10 @@ async function renderProjects() {
           <div class="m-ever" style="width:${m.evergreen/tot*100}%"></div>
         </div>
         ${p.last_gist ? `<div class="lastline">latest: ${esc(p.last_gist)}</div>` : ''}
+        ${tri ? `<div class="triage-strip">
+          ${(tri.members && tri.members.length > 1) ? `<div class="triage-mem">${tri.members.length} tags read as one topic: ${tri.members.map(x => `<span class="pbadge">${esc(x)}</span>`).join(' ')}</div>` : ''}
+          <div class="triage-ev">why: ${esc(tri.reason)}</div>
+        </div>` : ''}
         ${!p.emerging ? (() => {
           const kids = nestKids.filter(k => k.parent === p.tag);
           if (!kids.length) return '';
@@ -4798,16 +4945,68 @@ async function renderProjects() {
       const prop = proposed.length ? `<div class="proj-sec">Proposed <span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400;margin-left:6px">${proposed.length} found in your history — your call, your pace</span></div>${propHTML}` : '';
       const empty = (!approved.length && !emerging.length && !proposed.length) ? '<div class="empty">No projects yet — plant thoughts with project tags.</div>' : '';
       const hA = approved.length ? `<div class="proj-sec">Approved <span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400">${approved.length} declared ${approved.length === 1 ? 'project' : 'projects'}</span></div>` : '';
-      // Emerging is the long tail — often dozens of families. The framed section
-      // header ITSELF is the toggle: click "EMERGING …" to open the drawer of
-      // cards (collapsed by default), so the long list no longer floods the page.
-      // One line, not two. Cards + their promote/file-under controls render only
-      // when the drawer is opened.
-      const hE = emerging.length ? `<details class="proj-drawer">`
-        + `<summary class="proj-sec">Emerging <span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400">${emerging.length} ${emerging.length === 1 ? 'topic' : 'topics'} with real mass — promote to declare</span></summary>`
-        + `<div style="padding:4px 0 2px">${emerging.map(pcard).join('')}</div>`
-        + `</details>` : '';
-      return hA + approved.map(pcard).join('') + prop + hE + empty;
+      // ── Gate 2 ──────────────────────────────────────────────────────────────────
+      // The raw Emerging dump is gone. Every family the classifier ruled on now lands in
+      // exactly one of five read-only sections. ONLY Stage-1 candidates with POSITIVE
+      // evidence render as full cards — and they keep the promote / file-under / not-a-
+      // project controls they already had. The other four are collapsed drawers with NO
+      // actions: Gate 3 owns Confirm/Bless/Mark-non-project. Counts come from the
+      // payload, never a snapshot — the vault is live and these move as work lands.
+      const sub = t => `<span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400">${t}</span>`;
+      const trow = t => `
+        <div class="triage-row">
+          <div class="triage-h">
+            <span class="triage-tag">${esc(t.tag)}</span>
+            ${(t.members && t.members.length > 1) ? `<span class="pbadge" title="${esc(t.members.join(', '))}">${t.members.length} tags</span>` : ''}
+            <span class="pbadge">${t.n} ${t.n === 1 ? 'memory' : 'memories'}</span>
+            ${t.parent ? `<span class="pbadge" title="parent suggested by the classifier — nothing is filed">↳ ${esc(t.parent)}</span>` : ''}
+            ${t.band ? `<span class="pbadge">${esc(t.band)}</span>` : ''}
+            ${t.section_label ? `<span class="pbadge" title="how the classifier filed this">${esc(t.section_label)}</span>` : ''}
+            <span class="who" style="margin-left:auto" title="the gate that decided this">${esc(t.gate)}</span>
+          </div>
+          <div class="triage-why">${esc(t.disposition)}</div>
+          <div class="triage-ev">${esc(t.reason)}</div>
+        </div>`;
+      const drawer = (key, title, blurb) => {
+        const rows = sec[key] || [];
+        if (!rows.length) return '';
+        return `<details class="triage-drawer" id="triage-${key}">
+          <summary>${rows.length} ${title} ${sub('— ' + blurb)}</summary>
+          <div class="triage-body">${rows.map(trow).join('')}</div>
+        </details>`;
+      };
+      const likelyDrawer = (() => {
+        const rows = sec.likely_under || [];
+        if (!rows.length) return '';
+        const by = {};
+        rows.forEach(t => { const k = t.parent || '—'; (by[k] = by[k] || []).push(t); });
+        const parents = Object.keys(by).sort((a, b) => by[b].length - by[a].length || a.localeCompare(b));
+        return `<details class="triage-drawer" id="triage-likely_under">
+          <summary>${rows.length} likely under existing projects ${sub('— grouped by parent · nothing is filed')}</summary>
+          <div class="triage-body">${parents.map(par => `
+            <div class="triage-group">
+              <div class="triage-gh">${esc(par)} ${sub(by[par].length + (by[par].length === 1 ? ' topic' : ' topics'))}</div>
+              ${by[par].map(trow).join('')}
+            </div>`).join('')}</div>
+        </details>`;
+      })();
+      // Never silently drop a verdict: anything the five sections do not claim says so.
+      const odd = (tri.unsectioned || []).length ? `<div class="triage-warn" id="triage-unsectioned">⚠ ${tri.unsectioned.length} card${tri.unsectioned.length === 1 ? '' : 's'} matched no section (${esc((tri.unsectioned || []).map(t => t.gate).join(', '))}) — surfaced, never dropped.</div>` : '';
+      const emCards = (sec.emerging || []).map(t => {
+        // Locate the legacy display card through ANY cluster member, not just the exact
+        // headline: prefer the server-resolved display_tag (a still-visible member), then
+        // the headline, then any member. A dismissed headline must not blank the card.
+        const p = emerging.find(x => x.tag === (t.display_tag || t.tag))
+               || emerging.find(x => (t.members || []).includes(x.tag));
+        return p ? pcard(p, t) : '';
+      }).join('');
+      const hE = (sec.emerging || []).length ? `<div class="proj-sec" id="sec-emerging">Emerging Projects ${sub(scount.emerging + (scount.emerging === 1 ? ' candidate' : ' candidates') + ' with positive evidence — promote to declare')}</div>` : '';
+      const hT = `<div class="proj-sec" id="sec-triage">Triage ${sub((tri.visible_cards || 0) + ' shown · read-only — what the evidence decided, and what it could not')}</div>`;
+      const drawers = hT + odd + likelyDrawer
+        + drawer('skills', 'Skills &amp; Frameworks', 'global skills and project-specific how-tos')
+        + drawer('filtered', 'filtered topics', 'identity, process and machinery — not projects')
+        + drawer('review', 'needs semantic review', 'undecidable without meaning — excluded from the Emerging count');
+      return hA + approved.map(p => pcard(p)).join('') + prop + hE + emCards + drawers + empty;
     })()}
     ${absorbed.length ? `<details style="margin:4px 0 10px">
       <summary class="hub-sub" style="cursor:pointer">▸ ${absorbed.length} filed into Skills & Frameworks — audit history</summary>

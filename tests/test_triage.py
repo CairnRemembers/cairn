@@ -17,13 +17,17 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
+import subprocess
 import sys
+import textwrap
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+sys.path.insert(0, REPO_ROOT)
 from cairn.vault import Vault, MicroNode
 
 
@@ -510,6 +514,55 @@ def test_machinery_evidence_override_demotes_to_confirm(home, vault):
     assert card["gate"] == "S1.2"
     assert card["band"] == "low"
     assert card["disposition"] == "likely non-project — confirm"
+
+
+# ------------------------------------------------------------------ §7 determinism
+
+def test_tied_cluster_headline_and_member_order_break_on_the_family_key(home, vault):
+    """§7 — a node-count TIE must resolve on the family key, never on set-iteration order.
+
+    `comp` is a set, and sorted() is stable, so a count-only key hands ties to whatever
+    order the set happened to iterate in. That is per-process random."""
+    _seed_projects(home)
+    triage = _reload(home)
+    _n(vault, ["zebra", "alpha", "mango"], n=6)      # three-way tie: 6 nodes each
+
+    card = _card(triage.triage_data(vault), "alpha")
+    assert card["tag"] == "alpha", "the tie breaks alphabetically on the family key"
+    assert card["members"] == ["alpha", "mango", "zebra"]
+
+
+def test_cluster_order_is_identical_across_hash_seeds(home, vault):
+    """The regression for the real defect: PYTHONHASHSEED randomizes str hashing, which
+    reorders set iteration. Tied families (acorn/whistle at 14 each) flipped a card's
+    HEADLINE between processes, so the same vault rendered a differently-named card on
+    reload. Every seed must now produce byte-identical cards."""
+    _seed_projects(home)
+    _reload(home)
+    _n(vault, ["zebra", "alpha", "mango"], n=6)      # tie
+    _n(vault, ["acorn", "whistle"], n=14)            # the real-world tie, reproduced
+    vault.conn.commit()
+
+    script = textwrap.dedent("""
+        import json, sys
+        sys.path.insert(0, sys.argv[1])
+        from cairn.vault import Vault
+        from cairn.triage import triage_data
+        d = triage_data(Vault(db_path=sys.argv[2]))
+        print(json.dumps([[c["tag"], c["members"]] for c in d["cards"]]))
+    """)
+    outs = []
+    for seed in ("0", "1", "2", "13"):
+        env = dict(os.environ, PYTHONHASHSEED=seed,
+                   HOME=str(home), USERPROFILE=str(home))
+        r = subprocess.run([sys.executable, "-c", script, REPO_ROOT, str(vault.db_path)],
+                           capture_output=True, text=True, env=env)
+        assert r.returncode == 0, "seed %s failed: %s" % (seed, r.stderr)
+        outs.append(r.stdout.strip())
+
+    assert len(set(outs)) == 1, (
+        "card headline/member order must not depend on PYTHONHASHSEED; got %d variants"
+        % len(set(outs)))
 
 
 # ------------------------------------------------------------------ §3 family union

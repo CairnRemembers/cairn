@@ -592,7 +592,13 @@ def _clusters(pool, fams, idx: _Index) -> dict:
             seen.add(x)
             stack.extend(adj[x] - comp)
         if len(comp) > 1:
-            comps.append(sorted(comp, key=lambda k: -len(fams[k]["nodes"])))
+            # The secondary key is load-bearing, not tidiness. `comp` is a SET, and
+            # Python randomizes str hashing per process, so on a node-count TIE a
+            # count-only sort inherits set-iteration order and resolves differently on
+            # every run: acorn/whistle (14 nodes each) swapped the card's headline
+            # between refreshes, and splatter/parallax (9 each) reordered SpotCMYK's
+            # members. Ties break on the family key so the card is reproducible.
+            comps.append(sorted(comp, key=lambda k: (-len(fams[k]["nodes"]), k)))
 
     out = {}
     for ci, comp in enumerate(comps):
