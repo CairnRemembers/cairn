@@ -129,9 +129,25 @@ def cmd_note(args: list[str]) -> None:
     if supersedes:
         # durable meaning-edge stored ON THE NODE — the edges table is derived
         # (rebuilt by `cairn edges`), so a row there wouldn't survive.
+        #
+        # ZERO-MUTATION CONTRACT: validate the target BEFORE anything is
+        # written. A supersede aimed at a missing or already-retired node
+        # fails closed — clear error, nonzero exit, nothing in the vault: no
+        # lineage note pointing nowhere, no second successor muddying who
+        # retired what. The caller keeps the text and retries.
+        row = vault.conn.execute(
+            "SELECT status FROM nodes WHERE id=?", (supersedes,)).fetchone()
+        if row is None:
+            print(f"cairn: error — supersede target [{supersedes}] not found; "
+                  f"nothing written", file=sys.stderr)
+            sys.exit(1)
+        if row["status"] == "void":
+            print(f"cairn: error — supersede target [{supersedes}] already "
+                  f"retired; nothing written", file=sys.stderr)
+            sys.exit(1)
         tags.append("supersedes:" + supersedes)
 
-    node = vault.write(MicroNode(
+    micro = MicroNode(
         session        = session,
         kind           = kind,
         query          = text[:500],
@@ -139,7 +155,33 @@ def cmd_note(args: list[str]) -> None:
         parent         = parent,
         model          = model,
         tags           = tags,
-    ))
+    )
+
+    if supersedes:
+        # Successor write + retirement are ONE transaction: if either half
+        # fails, neither lands — no successor without a retired target, no
+        # retired target without its successor. The UPDATE is the same
+        # sanctioned append-only mutation vault.void() performs (the
+        # immutability trigger permits exactly status→void); it runs inside
+        # the shared transaction instead of auto-committing, and the rowcount
+        # guard closes the validate→write race (target voided concurrently →
+        # roll everything back and fail closed).
+        try:
+            node = vault.write(micro, commit=False)
+            cur = vault.conn.execute(
+                "UPDATE nodes SET status='void' WHERE id=? AND status!='void'",
+                (supersedes,))
+            if cur.rowcount != 1:
+                vault.conn.rollback()
+                print(f"cairn: error — supersede target [{supersedes}] changed "
+                      f"state during write; nothing written", file=sys.stderr)
+                sys.exit(1)
+            vault.conn.commit()
+        except BaseException:
+            vault.conn.rollback()
+            raise
+    else:
+        node = vault.write(micro)
 
     state = Path.home() / ".cairn" / "last_node.txt"
     state.write_text(node.id)
@@ -147,20 +189,8 @@ def cmd_note(args: list[str]) -> None:
     print(f"cairn: wrote {kind} [{node.id}]")
     if parent:
         print(f"       chained to: {parent}")
-    # retire the superseded node via the SANCTIONED append-only path — void() is
-    # the only allowed status mutation (an immutability trigger blocks any other).
-    # Voided nodes drop from fetch/inject (both filter status='active'); the
-    # supersedes:<id> tag on the new node preserves the lineage either way.
     if supersedes:
-        row = vault.conn.execute(
-            "SELECT status FROM nodes WHERE id=?", (supersedes,)).fetchone()
-        if row is None:
-            print(f"       note: [{supersedes}] not found — link recorded, nothing retired")
-        elif row["status"] == "void":
-            print(f"       note: [{supersedes}] already retired — link recorded")
-        else:
-            vault.void(supersedes)
-            print(f"       supersedes [{supersedes}] — retired (void), stops resurfacing")
+        print(f"       supersedes [{supersedes}] — retired (void), stops resurfacing")
     print(f"       '{text[:80]}{'...' if len(text) > 80 else ''}'")
 
 
