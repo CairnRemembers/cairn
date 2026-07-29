@@ -3075,6 +3075,11 @@ GARDEN_HTML = r"""<!DOCTYPE html>
   body:not([data-theme='dusk']) .proj-sec {
     border-image: url('/assets/pb-dawn/frame.png') 20 fill / 16px stretch;
   }
+  /* Emerging drawer: the framed section header IS the toggle (click to open). */
+  .proj-drawer > summary { list-style: none; cursor: pointer; }
+  .proj-drawer > summary::-webkit-details-marker { display: none; }
+  .proj-drawer > summary::after { content: ' ▸'; font-weight: 700; }
+  .proj-drawer[open] > summary::after { content: ' ▾'; }
   .reply-row { display: flex; gap: 8px; margin-top: 14px; }
   .reply-row input {
     flex: 1; background: var(--card); color: var(--ink);
@@ -4793,8 +4798,16 @@ async function renderProjects() {
       const prop = proposed.length ? `<div class="proj-sec">Proposed <span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400;margin-left:6px">${proposed.length} found in your history — your call, your pace</span></div>${propHTML}` : '';
       const empty = (!approved.length && !emerging.length && !proposed.length) ? '<div class="empty">No projects yet — plant thoughts with project tags.</div>' : '';
       const hA = approved.length ? `<div class="proj-sec">Approved <span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400">${approved.length} declared ${approved.length === 1 ? 'project' : 'projects'}</span></div>` : '';
-      const hE = emerging.length ? `<div class="proj-sec">Emerging <span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400">${emerging.length} ${emerging.length === 1 ? 'topic' : 'topics'} with real mass — promote to declare</span></div>` : '';
-      return hA + approved.map(pcard).join('') + prop + hE + emerging.map(pcard).join('') + empty;
+      // Emerging is the long tail — often dozens of families. The framed section
+      // header ITSELF is the toggle: click "EMERGING …" to open the drawer of
+      // cards (collapsed by default), so the long list no longer floods the page.
+      // One line, not two. Cards + their promote/file-under controls render only
+      // when the drawer is opened.
+      const hE = emerging.length ? `<details class="proj-drawer">`
+        + `<summary class="proj-sec">Emerging <span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400">${emerging.length} ${emerging.length === 1 ? 'topic' : 'topics'} with real mass — promote to declare</span></summary>`
+        + `<div style="padding:4px 0 2px">${emerging.map(pcard).join('')}</div>`
+        + `</details>` : '';
+      return hA + approved.map(pcard).join('') + prop + hE + empty;
     })()}
     ${absorbed.length ? `<details style="margin:4px 0 10px">
       <summary class="hub-sub" style="cursor:pointer">▸ ${absorbed.length} filed into Skills & Frameworks — audit history</summary>
