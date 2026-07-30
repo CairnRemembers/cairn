@@ -3189,6 +3189,13 @@ GARDEN_HTML = r"""<!DOCTYPE html>
   body:not([data-theme='dusk']) .proj-sec {
     border-image: url('/assets/pb-dawn/frame.png') 20 fill / 16px stretch;
   }
+  /* Combined preview: the Emerging drawer SHELL — the framed section header IS the
+     toggle; opening it reveals Gate 2's five classified groups underneath. Direct-child
+     selectors so the nested triage-drawer summaries keep their own styling. */
+  .proj-drawer > summary { list-style: none; cursor: pointer; }
+  .proj-drawer > summary::-webkit-details-marker { display: none; }
+  .proj-drawer > summary::after { content: ' ▸'; font-weight: 700; }
+  .proj-drawer[open] > summary::after { content: ' ▾'; }
   .reply-row { display: flex; gap: 8px; margin-top: 14px; }
   .reply-row input {
     flex: 1; background: var(--card); color: var(--ink);
@@ -5000,13 +5007,24 @@ async function renderProjects() {
                || emerging.find(x => (t.members || []).includes(x.tag));
         return p ? pcard(p, t) : '';
       }).join('');
-      const hE = (sec.emerging || []).length ? `<div class="proj-sec" id="sec-emerging">Emerging Projects ${sub(scount.emerging + (scount.emerging === 1 ? ' candidate' : ' candidates') + ' with positive evidence — promote to declare')}</div>` : '';
+      const hE = (sec.emerging || []).length ? `<div class="proj-sec" id="sec-emerging" style="margin-top:6px">Emerging Projects ${sub(scount.emerging + (scount.emerging === 1 ? ' candidate' : ' candidates') + ' with positive evidence — promote to declare')}</div>` : '';
       const hT = `<div class="proj-sec" id="sec-triage">Triage ${sub((tri.visible_cards || 0) + ' shown · read-only — what the evidence decided, and what it could not')}</div>`;
-      const drawers = hT + odd + likelyDrawer
+      const triageBody = hT + odd + likelyDrawer
         + drawer('skills', 'Skills &amp; Frameworks', 'global skills and project-specific how-tos')
         + drawer('filtered', 'filtered topics', 'identity, process and machinery — not projects')
         + drawer('review', 'needs semantic review', 'undecidable without meaning — excluded from the Emerging count');
-      return hA + approved.map(p => pcard(p)).join('') + prop + hE + emCards + drawers + empty;
+      // COMBINED (owner design 2026-07-17): the drawer is the visual/interaction SHELL;
+      // Gate 2's classified sections are the content underneath. One outer <details>
+      // collapses the whole Emerging block behind an honest summary; opening it reveals the
+      // five groups (the candidate card + the four triage drawers). Approved/Proposed stay
+      // ABOVE, Archived/Passed stay BELOW, and no third nesting level is introduced.
+      const candN = scount.emerging || 0;
+      const sortedN = Math.max(0, (tri.visible_cards || 0) - candN);
+      const emergingShell = (candN || sortedN) ? `<details class="proj-drawer" id="emerging-shell">`
+        + `<summary class="proj-sec">Emerging <span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400">— ${candN} candidate${candN === 1 ? '' : 's'} · ${sortedN} sorted</span></summary>`
+        + `<div style="padding:4px 0 2px">${hE + emCards + triageBody}</div>`
+        + `</details>` : '';
+      return hA + approved.map(p => pcard(p)).join('') + prop + emergingShell + empty;
     })()}
     ${absorbed.length ? `<details style="margin:4px 0 10px">
       <summary class="hub-sub" style="cursor:pointer">▸ ${absorbed.length} filed into Skills & Frameworks — audit history</summary>
