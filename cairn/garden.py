@@ -1647,18 +1647,30 @@ def register_garden(app, vault, current_session_fn) -> None:
             return JSONResponse({"error": "not found"}, status_code=404)
         note = (payload or {}).get("note") or ""
         from cairn.vault import MicroNode
-        resolved = vault.write(MicroNode(
-            session     = current_session_fn(),
-            kind        = "resolved",
-            query       = (note or f"done: {(row['query'] or '')[:200]}"),
-            parent      = node_id,
-            model       = "human",
-            speaker     = "user",
-            agent_role  = "curator",
-            tags        = ["garden", "desk-done"],
-        ))
-        vault.void(node_id, source="garden:/done",
-                   provenance=f"resolved-successor={resolved.id}")
+        # receipt + void are ONE transaction: a done that can't retire its
+        # item writes nothing (no orphan receipt), and a receipt that can't
+        # be written leaves the item open (no unexplained void).
+        try:
+            resolved = vault.write(MicroNode(
+                session     = current_session_fn(),
+                kind        = "resolved",
+                query       = (note or f"done: {(row['query'] or '')[:200]}"),
+                parent      = node_id,
+                model       = "human",
+                speaker     = "user",
+                agent_role  = "curator",
+                tags        = ["garden", "desk-done"],
+            ), commit=False)
+            if not vault.void(node_id, source="garden:/done",
+                              provenance=f"resolved-successor={resolved.id}",
+                              commit=False):
+                # False already rolled the shared txn back — receipt gone too
+                return JSONResponse({"error": "item changed state — "
+                                     "nothing written"}, status_code=409)
+            vault.conn.commit()
+        except BaseException:
+            vault.conn.rollback()
+            raise
         _spawn_embed()
         return {"resolved": resolved.id, "voided": node_id}
 
@@ -1682,18 +1694,28 @@ def register_garden(app, vault, current_session_fn) -> None:
         except Exception:
             tags = []
         from cairn.vault import MicroNode
-        fresh = vault.write(MicroNode(
-            session     = current_session_fn(),
-            kind        = orig["kind"] or "open_item",
-            query       = orig["query"],
-            output_preview = (orig["output_preview"] or orig["query"] or ""),
-            parent      = orig["id"],
-            model       = "human",
-            speaker     = "user",
-            agent_role  = "curator",
-            tags        = tags + ["restored-after-misclick"],
-        ))
-        vault.void(resolved_id)
+        # restore + receipt-void are ONE transaction (mirror of /done)
+        try:
+            fresh = vault.write(MicroNode(
+                session     = current_session_fn(),
+                kind        = orig["kind"] or "open_item",
+                query       = orig["query"],
+                output_preview = (orig["output_preview"] or orig["query"] or ""),
+                parent      = orig["id"],
+                model       = "human",
+                speaker     = "user",
+                agent_role  = "curator",
+                tags        = tags + ["restored-after-misclick"],
+            ), commit=False)
+            if not vault.void(resolved_id, source="garden:/undo-done",
+                              provenance=f"restored={fresh.id}",
+                              commit=False):
+                return JSONResponse({"error": "receipt changed state — "
+                                     "nothing written"}, status_code=409)
+            vault.conn.commit()
+        except BaseException:
+            vault.conn.rollback()
+            raise
         _spawn_embed()
         return {"restored": fresh.id, "receipt_voided": resolved_id}
 

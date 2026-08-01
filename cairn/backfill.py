@@ -237,15 +237,36 @@ def reset_session(v: Vault, session: str, drop_turns: bool = False) -> int:
     drop_turns also voids the raw turns — used for imports, to replace truncated
     stubs with full-text-derived claims. Native turns are kept (full-text, the
     real captured timeline). Append-only: status->void, never deleted."""
-    n = v.conn.execute(
-        "UPDATE nodes SET status='void' WHERE session=? AND status!='void' "
-        "AND model LIKE 'distilled:%'", (session,)).rowcount
-    if drop_turns:
-        n += v.conn.execute(
+    try:
+        n = v.conn.execute(
             "UPDATE nodes SET status='void' WHERE session=? AND status!='void' "
-            "AND kind='conversation_turn'", (session,)).rowcount
-    v.conn.commit()
-    return n
+            "AND model LIKE 'distilled:%'", (session,)).rowcount
+        if drop_turns:
+            n += v.conn.execute(
+                "UPDATE nodes SET status='void' WHERE session=? AND status!='void' "
+                "AND kind='conversation_turn'", (session,)).rowcount
+        if n:
+            # bulk accountability: ONE audit node covers the whole reset, in
+            # the same transaction — if the audit fails, the reset rolls back.
+            from datetime import datetime, timezone
+            from cairn.vault import MicroNode
+            v.write(MicroNode(
+                session="void-audit", kind="void_audit", model="system",
+                memory_tier=2,
+                query=(f"VOID AUDIT — bulk: {n} node(s) in session "
+                       f"[{session}] voided via backfill-reset "
+                       f"(drop_turns={drop_turns}) at "
+                       f"{datetime.now(timezone.utc).isoformat()}; one audit "
+                       f"covers the whole reset (declaration, not "
+                       f"authentication)"),
+                tags=["void-audit", "path:backfill-reset",
+                      f"session:{session}"],
+            ), commit=False)
+        v.conn.commit()
+        return n
+    except BaseException:
+        v.conn.rollback()
+        raise
 
 
 def ingest(v: Vault, session: str, claims: list, distiller: str = "claude") -> list:

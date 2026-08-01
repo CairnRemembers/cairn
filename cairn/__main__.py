@@ -1808,7 +1808,7 @@ def cmd_doc(args: list[str]) -> None:
         "SELECT id FROM nodes WHERE status='active' AND kind='artifact' "
         "AND tags LIKE ?", (f'%"file:{p}"%',)).fetchall()
     for o in old:
-        v.void(o["id"])
+        v.void(o["id"], source="register")
 
     node = v.write(MicroNode(
         session     = get_session(),

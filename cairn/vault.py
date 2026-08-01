@@ -1245,15 +1245,27 @@ class Vault:
         return node
 
     def void(self, node_id: str, source: str = "internal",
-             provenance: "str | None" = None) -> bool:
+             provenance: "str | None" = None, commit: bool = True) -> bool:
         """
         Only allowed state mutation. Marks node invalidated, never deletes.
-        ACCOUNTABILITY: every successful void writes exactly ONE immutable
-        audit node in the SAME transaction — if the audit write fails, the
-        void does not land. `source` = code path (cli/garden/register/…),
+        ACCOUNTABILITY: every successful void through THIS method writes
+        exactly ONE immutable audit node in the SAME transaction — if the
+        audit write fails, the void does not land. `source` = code path,
         `provenance` = whatever request context exists; both are recorded as
         DECLARATION, not authentication — nothing here proves owner identity.
         Returns True iff the target was actually voided.
+
+        commit=False joins the caller's open transaction (garden done/undo
+        use it to make companion-write + void atomic). NOTE the fail-closed
+        semantics: a False return has ALREADY rolled back the shared
+        transaction — the caller's uncommitted work is gone with it.
+
+        THE HONEST AUDIT CONTRACT — two paths void WITHOUT an audit node,
+        by design: (1) `note --supersedes` (its successor node, written in
+        the same transaction with a supersedes:<id> tag, IS the record —
+        owner-ratified contract, tests pin it); (2) `backfill.reset_session`
+        writes ONE bulk audit node covering all rows it voids, not one per
+        row. Every other in-repo path routes through here.
         """
         try:
             cur = self.conn.execute(
@@ -1274,7 +1286,8 @@ class Vault:
                 memory_tier = 2,
                 tags = ["void-audit", f"target:{node_id}", f"path:{source}"],
             ), commit=False)
-            self.conn.commit()
+            if commit:
+                self.conn.commit()
             return True
         except BaseException:
             self.conn.rollback()

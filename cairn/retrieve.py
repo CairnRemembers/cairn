@@ -119,7 +119,7 @@ def ingest_path(
                 report["skipped"] += 1
                 continue
             for e in existing:           # file changed → retire stale chunks
-                v.void(e["id"])
+                v.void(e["id"], source="file-reindex")
             report["updated"] += 1
 
         chunks = _chunk(text, rel)
