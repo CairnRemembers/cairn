@@ -41,6 +41,13 @@ _NAVIGATE = ("cairn fetch \"q\" before re-reading files/history | "
              "note decisions/warnings as you work | "
              "full book: ~/.cairn/BOOK.md")
 
+# The three-layer claim rule, recited to every model at every orient. Rides
+# its own single line under NAVIGATE (the page_one line budget accounts for
+# it; the 34-line cap is unchanged).
+_CLAIM_RULE = ("CLAIM CHECK: logs = tail only, search = history only - "
+               "absence in one is NEVER evidence; check tail + full history "
+               "+ live source before calling anything new, stale, or decided")
+
 
 def _projects() -> dict:
     """Declared projects: ~/.cairn/projects.json, same file the Garden reads.
@@ -625,7 +632,14 @@ def page_one(vault, account: "str | None" = None) -> str:
             suffix = f"  ({ann[w['id']]})" if w["id"] in ann else ""
             lines.append(f"  - {_gist(w)[:100]}{suffix}")
     lines.append(f"NAVIGATE: {_NAVIGATE}")
+    lines.append(_CLAIM_RULE)
     lines.append("== last session's protocol follows ==")
+    # cap unchanged at 34 — but the three tail lines (NAVIGATE, CLAIM CHECK,
+    # protocol marker) are REQUIRED: if the landscape above would push them
+    # past the cap, trim landscape lines, never the tail.
+    if len(lines) > 34:
+        tail = lines[-3:]
+        lines = lines[:31] + tail
     return "\n".join(lines[:34])
 
 
