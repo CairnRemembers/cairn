@@ -85,6 +85,7 @@ def cmd_note(args: list[str]) -> None:
     kind    = "note"
     speaker = "agent"
     supersedes = None
+    relations = []   # annotate-only: (relation, target_id) — target stays active
     content = []
 
     i = 0
@@ -98,6 +99,11 @@ def cmd_note(args: list[str]) -> None:
             speaker = args[i].split("=", 1)[1]
         elif args[i].startswith("--supersedes="):
             supersedes = args[i].split("=", 1)[1].strip()
+        elif args[i].startswith(("--corrects=", "--narrows=",
+                                 "--applies-after=", "--conflicts-with=",
+                                 "--resolves=")):
+            flag, val = args[i].split("=", 1)
+            relations.append((flag[2:], val.strip()))
         else:
             content.append(args[i])
         i += 1
@@ -147,6 +153,22 @@ def cmd_note(args: list[str]) -> None:
             sys.exit(1)
         tags.append("supersedes:" + supersedes)
 
+    for rel, target in relations:
+        # Same fail-closed gate as supersede, minus the retirement: the target
+        # must exist and be active, and it STAYS active — these relations are
+        # ANNOTATE-ONLY (nothing demoted, nothing hidden, no status change).
+        row = vault.conn.execute(
+            "SELECT status FROM nodes WHERE id=?", (target,)).fetchone()
+        if row is None:
+            print(f"cairn: error — {rel} target [{target}] not found; "
+                  f"nothing written", file=sys.stderr)
+            sys.exit(1)
+        if row["status"] == "void":
+            print(f"cairn: error — {rel} target [{target}] already "
+                  f"retired; nothing written", file=sys.stderr)
+            sys.exit(1)
+        tags.append(f"{rel}:{target}")
+
     micro = MicroNode(
         session        = session,
         kind           = kind,
@@ -191,6 +213,8 @@ def cmd_note(args: list[str]) -> None:
         print(f"       chained to: {parent}")
     if supersedes:
         print(f"       supersedes [{supersedes}] — retired (void), stops resurfacing")
+    for rel, target in relations:
+        print(f"       {rel} [{target}] — annotate-only, target stays active")
     print(f"       '{text[:80]}{'...' if len(text) > 80 else ''}'")
 
 

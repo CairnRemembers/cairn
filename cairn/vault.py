@@ -1251,6 +1251,60 @@ class Vault:
         )
         self.conn.commit()
 
+    # Relation prefixes carried in tags. "supersedes" retires its target
+    # (cmd_note voids it atomically); the other four are ANNOTATE-ONLY —
+    # targets stay active, ranked, and visible. Tags are the durable store
+    # (the edges table is derived and wiped on every rebuild).
+    RELATION_PREFIXES = ("supersedes", "corrects", "narrows",
+                        "applies-after", "conflicts-with")
+
+    def incoming_relations(self, ids) -> dict:
+        """
+        Reverse relation lookup: which ACTIVE nodes carry a relation tag
+        pointing at any of `ids`. Returns {target_id: [(relation, source_id),
+        ...]}, lists sorted for deterministic rendering. conflicts-with is
+        symmetric — a queried node that itself carries conflicts-with:<x>
+        also gets an entry, so both sides of a conflict surface. Read-only.
+        """
+        idset = {i for i in ids if i}
+        if not idset:
+            return {}
+        clauses, params = [], []
+        for i in idset:
+            for p in self.RELATION_PREFIXES:
+                clauses.append("tags LIKE ?")
+                params.append(f'%"{p}:{i}"%')
+        out: dict = {}
+        rows = self.conn.execute(
+            "SELECT id, tags FROM nodes WHERE status='active' AND ("
+            + " OR ".join(clauses) + ")", params).fetchall()
+        for r in rows:
+            try:
+                tags = json.loads(r["tags"] or "[]")
+            except Exception:
+                continue
+            for t in tags:
+                for p in self.RELATION_PREFIXES:
+                    if t.startswith(p + ":") and t[len(p) + 1:] in idset:
+                        out.setdefault(t[len(p) + 1:], []).append((p, r["id"]))
+        # symmetric half of conflicts-with: queried nodes carrying the tag
+        qmarks = ",".join("?" * len(idset))
+        rows = self.conn.execute(
+            f"SELECT id, tags FROM nodes WHERE id IN ({qmarks}) "
+            "AND tags LIKE '%\"conflicts-with:%'", list(idset)).fetchall()
+        for r in rows:
+            try:
+                tags = json.loads(r["tags"] or "[]")
+            except Exception:
+                continue
+            for t in tags:
+                if t.startswith("conflicts-with:"):
+                    out.setdefault(r["id"], []).append(
+                        ("conflicts-with", t.split(":", 1)[1]))
+        for k in out:
+            out[k] = sorted(set(out[k]))
+        return out
+
     def flag(self, node_id: str) -> None:
         self.conn.execute(
             "UPDATE nodes SET flagged=1 WHERE id=?", (node_id,)
