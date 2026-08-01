@@ -572,6 +572,8 @@ def cmd_read(args: list[str]) -> None:
             print(f"   {_ann[r['id']]}")
         try:
             for _t in json.loads(r["tags"] or "[]"):
+                if not isinstance(_t, str):
+                    continue
                 for _p in ("supersedes", "corrects", "narrows",
                            "applies-after", "conflicts-with", "resolves"):
                     if _t.startswith(_p + ":"):

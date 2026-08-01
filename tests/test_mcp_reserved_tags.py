@@ -91,6 +91,37 @@ def test_normal_note_still_writes(home):
     assert _rows(_vault()) == before + 1
 
 
+def test_non_string_tags_rejected_server_side(home):
+    mcp = _fresh()
+    v = _vault()
+    before = _rows(v)
+    out = mcp._tool_note({"text": "hostile", "tags": [123, {"a": 1}]})
+    assert "REJECTED" in out and "must be strings" in out
+    assert _rows(_vault()) == before
+
+
+def test_hostile_non_string_tag_cannot_suppress_annotations(home):
+    """A node whose stored tags contain non-strings must not crash the
+    relation pass — the legitimate annotation still renders."""
+    from cairn.vault import MicroNode
+    mcp = _fresh()
+    v = _vault()
+    vid = _seed(v)
+    # legitimate relation (direct write, as the CLI would after validation)
+    v.write(MicroNode(session="s", kind="note", query="fix",
+                      output_preview="fix", model="t",
+                      tags=[f"corrects:{vid}"]))
+    # hostile node with malformed tags in the same vault
+    v.write(MicroNode(session="s", kind="note", query="junk",
+                      output_preview="junk", model="t",
+                      tags=[123, None, {"x": 1}, f"corrects:{vid}"]))
+    rel = v.incoming_relations([vid])
+    assert vid in rel                              # pass survived
+    assert all(isinstance(src, str) for _, src in rel[vid])
+    ann = v.relation_annotations([vid])
+    assert "corrected by [" in ann[vid]            # annotation intact
+
+
 def test_proposed_relation_is_inert(home):
     """An unratified proposed-* tag writes fine but never annotates,
     demotes, or changes the status of its named target."""

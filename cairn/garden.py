@@ -1456,6 +1456,8 @@ def register_garden(app, vault, current_session_fn) -> None:
                 "WHERE status='active' AND kind='resolved'"):
             try:
                 for _t in json.loads(rr["tags"] or "[]"):
+                    if not isinstance(_t, str):
+                        continue
                     if _t.startswith("resolves:"):
                         resolved_refs.add(_t.split(":", 1)[1])
             except Exception:

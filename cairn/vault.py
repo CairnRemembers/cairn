@@ -1326,6 +1326,8 @@ class Vault:
             except Exception:
                 continue
             for t in tags:
+                if not isinstance(t, str):
+                    continue          # hostile/malformed tag never kills the pass
                 for p in self.RELATION_PREFIXES:
                     if t.startswith(p + ":") and t[len(p) + 1:] in idset:
                         out.setdefault(t[len(p) + 1:], []).append((p, r["id"]))
@@ -1340,7 +1342,7 @@ class Vault:
             except Exception:
                 continue
             for t in tags:
-                if t.startswith("conflicts-with:"):
+                if isinstance(t, str) and t.startswith("conflicts-with:"):
                     out.setdefault(r["id"], []).append(
                         ("conflicts-with", t.split(":", 1)[1]))
         for k in out:

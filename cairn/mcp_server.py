@@ -305,7 +305,17 @@ def _tool_note(args: dict) -> str:
     # cwd is often the client's, not the project dir, so CAIRN_PROJECT (env
     # branch (a)) is the reliable channel here; the folder-name fallback still
     # fires when the server does run in the project. Additive, never guesses.
-    tags = (args.get("tags") or []) + ["mcp"]
+    raw_tags = args.get("tags") or []
+    # Tags are STRINGS — schema says so, but the schema is client-side
+    # decoration; enforce server-side. A non-string tag would otherwise ride
+    # into the JSON column and could crash relation parsers downstream
+    # (an exception in an annotation pass = every annotation in that result
+    # set silently vanishing — a suppression vector, not just a bug).
+    nonstr = [t for t in raw_tags if not isinstance(t, str)]
+    if nonstr:
+        return ("cairn_note: REJECTED — tags must be strings (got "
+                f"{[type(t).__name__ for t in nonstr]}). Nothing was written.")
+    tags = raw_tags + ["mcp"]
     # Relation-integrity gate: authoritative relation tags are CLI-only, where
     # the target is validated (and, for supersedes, atomically voided). A
     # generic MCP tag write has neither validation nor authority — accepting
@@ -452,6 +462,8 @@ def _tool_read(args: dict) -> str:
         try:
             import json as _json
             for _t in _json.loads(r["tags"] or "[]"):
+                if not isinstance(_t, str):
+                    continue
                 for _p in ("supersedes", "corrects", "narrows",
                            "applies-after", "conflicts-with", "resolves"):
                     if _t.startswith(_p + ":"):
