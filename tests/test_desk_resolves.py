@@ -122,6 +122,64 @@ def test_imported_historical_node_cannot_reopen_grandfather(home, vault):
     assert w in _watch_ids(desk)          # import cannot reopen the bypass
 
 
+def test_actual_import_session_shape_cannot_reopen_grandfather(home,
+                                                               tmp_path):
+    """The REAL `cairn import-session` path: arbitrary --session name (dodges
+    every prefix rule), historical timestamp, kind=resolved — but the command
+    force-adds the 'backfill' tag, and that tag must kill the grandfather.
+    Everything runs in the HOME vault, the one the importer writes to."""
+    import importlib, json as _json
+    import cairn.__main__ as main
+    importlib.reload(main)
+    from cairn.vault import Vault as _V, MicroNode
+    hv = _V()
+    w = hv.write(MicroNode(session="s", kind="warning",
+                           query="live warning", output_preview="live warning",
+                           model="t", tags=["t"])).id
+    jsonl = tmp_path / "old.jsonl"
+    jsonl.write_text(_json.dumps({
+        "when": "2026-07-10T09:00:00+00:00", "kind": "resolved",
+        "text": f"sorted the issue {w} back then", "tags": [],
+        "speaker": "agent"}) + "\n", encoding="utf-8")
+    # innocent-looking session name — no import-/backfill- prefix to catch
+    main.cmd_import_session([str(jsonl), "--session=native-looking-chat",
+                             "--date=2026-07-10"])
+    desk = _desk(home, hv, cutoff="2026-08-02")
+    assert w in _watch_ids(desk)       # historical import cannot clear it
+
+
+def test_rowid_boundary_closes_the_set_even_against_native_shapes(home, vault):
+    """The marker boundary: two byte-identical hostile rows (native session,
+    pre-cutoff timestamp, no import provenance) — one inserted BEFORE the
+    marker grandfathers, the one inserted AFTER does not. Insert order is
+    the one thing a writer cannot forge."""
+    from cairn.vault import MicroNode
+    w1 = _warn(vault, "warning one")
+    w2 = _warn(vault, "warning two")
+    vault.conn.execute(
+        "INSERT INTO nodes (id, session, kind, timestamp, query, "
+        "output_preview, tags) VALUES (?,?,?,?,?,?,?)",
+        ("ddddddddd001", "s", "resolved", "2026-07-15T12:00:00+00:00",
+         f"fixed {w1} then", f"fixed {w1} then", "[]"))
+    vault.conn.commit()
+    # integration moment: the boundary marker
+    vault.write(MicroNode(session="desk-boundary", kind="procedure",
+                          query="desk mention grandfather boundary",
+                          output_preview="boundary", model="system",
+                          tags=["mention-grandfather-boundary"]))
+    # hostile post-marker insert, same shape as the legitimate one
+    vault.conn.execute(
+        "INSERT INTO nodes (id, session, kind, timestamp, query, "
+        "output_preview, tags) VALUES (?,?,?,?,?,?,?)",
+        ("ddddddddd002", "s", "resolved", "2026-07-15T12:00:00+00:00",
+         f"fixed {w2} then", f"fixed {w2} then", "[]"))
+    vault.conn.commit()
+    desk = _desk(home, vault, cutoff="2026-08-02")
+    ids = _watch_ids(desk)
+    assert w1 not in ids               # pre-marker row keeps its power
+    assert w2 in ids                   # post-marker row has none
+
+
 def test_distilled_historical_node_cannot_reopen_grandfather(home, vault):
     w = _warn(vault)
     vault.conn.execute(

@@ -1451,9 +1451,28 @@ def register_garden(app, vault, current_session_fn) -> None:
         # grandfather for the existing corpus, never an open bypass forward.
         import re as _rex
         resolved_refs: set = set()
+        # The grandfather is a genuinely CLOSED SET. Two layers, both required:
+        #
+        # (1) ROWID BOUNDARY (the closed set): a marker node tagged
+        #     "mention-grandfather-boundary" is written ONCE at integration; only
+        #     resolved rows INSERTED BEFORE it (rowid strictly below) may
+        #     grandfather. Claimed timestamps, session names, and tags are all
+        #     writer-controlled — the insert order is not. Until the marker
+        #     exists, layer (2) alone governs (fallback).
+        # (2) PROVENANCE EXCLUSION (belt for the fallback + defense in depth):
+        #     no import-%/backfill-% session, no "backfill" or
+        #     "prov:distilled" tag. NOTE `cairn import-session --session=NAME`
+        #     is caller-arbitrary, so session prefixes alone can NEVER close
+        #     the set — but that path force-adds the "backfill" tag, which is
+        #     why the tag check is load-bearing here.
+        _brow = vault.conn.execute(
+            "SELECT MIN(rowid) AS r FROM nodes "
+            "WHERE tags LIKE '%\"mention-grandfather-boundary\"%'").fetchone()
+        boundary_rowid = _brow["r"] if _brow else None
         for rr in vault.conn.execute(
-                "SELECT session, timestamp, tags, query, output_preview "
-                "FROM nodes WHERE status='active' AND kind='resolved'"):
+                "SELECT rowid, session, timestamp, tags, query, "
+                "output_preview FROM nodes "
+                "WHERE status='active' AND kind='resolved'"):
             try:
                 for _t in json.loads(rr["tags"] or "[]"):
                     if not isinstance(_t, str):
@@ -1462,16 +1481,15 @@ def register_garden(app, vault, current_session_fn) -> None:
                         resolved_refs.add(_t.split(":", 1)[1])
             except Exception:
                 pass
-            # The grandfather is a CLOSED SET, not a timestamp check alone: a
-            # node imported AFTER the cutoff arrives with a historical
-            # timestamp, so timestamp-only would let every future import
-            # reopen the text-mention bypass. Import-sourced and distilled
-            # resolved nodes therefore never grandfather — they use the
-            # structured tag like everything else born after the boundary.
+            _tags = rr["tags"] or ""
+            _sess = rr["session"] or ""
             grandfathered = (
                 (rr["timestamp"] or "")[:10] < RESOLVED_MENTION_CUTOFF
-                and not (rr["session"] or "").startswith("import-")
-                and '"prov:distilled"' not in (rr["tags"] or ""))
+                and not _sess.startswith("import-")
+                and not _sess.startswith("backfill-")
+                and '"prov:distilled"' not in _tags
+                and '"backfill"' not in _tags
+                and (boundary_rowid is None or rr["rowid"] < boundary_rowid))
             if grandfathered:
                 for fld in (rr["query"], rr["output_preview"]):
                     resolved_refs.update(
