@@ -105,3 +105,31 @@ def test_pre_cutoff_mentions_still_grandfathered(home, vault):
     vault.conn.commit()
     desk = _desk(home, vault, cutoff="2026-08-02")
     assert w not in _watch_ids(desk)      # old corpus keeps working
+
+
+def test_imported_historical_node_cannot_reopen_grandfather(home, vault):
+    """A resolved node IMPORTED after the boundary arrives with an old
+    timestamp — timestamp alone must not grant it text-mention power."""
+    w = _warn(vault)
+    vault.conn.execute(
+        "INSERT INTO nodes (id, session, kind, timestamp, query, "
+        "output_preview, tags) VALUES (?,?,?,?,?,?,?)",
+        ("bbbbbbbbbbbb", "import-gpt-2026-09-01", "resolved",
+         "2026-07-15T12:00:00+00:00",
+         f"fixed {w} ages ago", f"fixed {w} ages ago", "[]"))
+    vault.conn.commit()
+    desk = _desk(home, vault, cutoff="2026-08-02")
+    assert w in _watch_ids(desk)          # import cannot reopen the bypass
+
+
+def test_distilled_historical_node_cannot_reopen_grandfather(home, vault):
+    w = _warn(vault)
+    vault.conn.execute(
+        "INSERT INTO nodes (id, session, kind, timestamp, query, "
+        "output_preview, tags) VALUES (?,?,?,?,?,?,?)",
+        ("cccccccccccc", "s", "resolved", "2026-07-15T12:00:00+00:00",
+         f"fixed {w} ages ago", f"fixed {w} ages ago",
+         '["prov:distilled"]'))
+    vault.conn.commit()
+    desk = _desk(home, vault, cutoff="2026-08-02")
+    assert w in _watch_ids(desk)

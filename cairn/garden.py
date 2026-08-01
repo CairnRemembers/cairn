@@ -1452,8 +1452,8 @@ def register_garden(app, vault, current_session_fn) -> None:
         import re as _rex
         resolved_refs: set = set()
         for rr in vault.conn.execute(
-                "SELECT timestamp, tags, query, output_preview FROM nodes "
-                "WHERE status='active' AND kind='resolved'"):
+                "SELECT session, timestamp, tags, query, output_preview "
+                "FROM nodes WHERE status='active' AND kind='resolved'"):
             try:
                 for _t in json.loads(rr["tags"] or "[]"):
                     if not isinstance(_t, str):
@@ -1462,7 +1462,17 @@ def register_garden(app, vault, current_session_fn) -> None:
                         resolved_refs.add(_t.split(":", 1)[1])
             except Exception:
                 pass
-            if (rr["timestamp"] or "")[:10] < RESOLVED_MENTION_CUTOFF:
+            # The grandfather is a CLOSED SET, not a timestamp check alone: a
+            # node imported AFTER the cutoff arrives with a historical
+            # timestamp, so timestamp-only would let every future import
+            # reopen the text-mention bypass. Import-sourced and distilled
+            # resolved nodes therefore never grandfather — they use the
+            # structured tag like everything else born after the boundary.
+            grandfathered = (
+                (rr["timestamp"] or "")[:10] < RESOLVED_MENTION_CUTOFF
+                and not (rr["session"] or "").startswith("import-")
+                and '"prov:distilled"' not in (rr["tags"] or ""))
+            if grandfathered:
                 for fld in (rr["query"], rr["output_preview"]):
                     resolved_refs.update(
                         _rex.findall(r"\b[0-9a-f]{12}\b", fld or ""))
