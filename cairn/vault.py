@@ -1244,12 +1244,41 @@ class Vault:
             self.conn.commit()
         return node
 
-    def void(self, node_id: str) -> None:
-        """Only allowed state mutation. Marks node invalidated, never deletes."""
-        self.conn.execute(
-            "UPDATE nodes SET status='void' WHERE id=? AND status!='void'", (node_id,)
-        )
-        self.conn.commit()
+    def void(self, node_id: str, source: str = "internal",
+             provenance: "str | None" = None) -> bool:
+        """
+        Only allowed state mutation. Marks node invalidated, never deletes.
+        ACCOUNTABILITY: every successful void writes exactly ONE immutable
+        audit node in the SAME transaction — if the audit write fails, the
+        void does not land. `source` = code path (cli/garden/register/…),
+        `provenance` = whatever request context exists; both are recorded as
+        DECLARATION, not authentication — nothing here proves owner identity.
+        Returns True iff the target was actually voided.
+        """
+        try:
+            cur = self.conn.execute(
+                "UPDATE nodes SET status='void' WHERE id=? AND status!='void'",
+                (node_id,))
+            if cur.rowcount != 1:
+                self.conn.rollback()          # nothing voided → no audit either
+                return False
+            stamp = datetime.now(timezone.utc).isoformat()
+            self.write(MicroNode(
+                session = "void-audit",
+                kind    = "void_audit",
+                query   = (f"VOID AUDIT — [{node_id}] voided via {source} at "
+                           f"{stamp}; provenance: "
+                           f"{provenance or 'none declared'} "
+                           f"(declaration, not authentication)"),
+                model       = "system",
+                memory_tier = 2,
+                tags = ["void-audit", f"target:{node_id}", f"path:{source}"],
+            ), commit=False)
+            self.conn.commit()
+            return True
+        except BaseException:
+            self.conn.rollback()
+            raise
 
     # Relation prefixes carried in tags. "supersedes" retires its target
     # (cmd_note voids it atomically); the other four are ANNOTATE-ONLY —

@@ -1657,7 +1657,8 @@ def register_garden(app, vault, current_session_fn) -> None:
             agent_role  = "curator",
             tags        = ["garden", "desk-done"],
         ))
-        vault.void(node_id)
+        vault.void(node_id, source="garden:/done",
+                   provenance=f"resolved-successor={resolved.id}")
         _spawn_embed()
         return {"resolved": resolved.id, "voided": node_id}
 
@@ -2578,9 +2579,12 @@ def register_garden(app, vault, current_session_fn) -> None:
         return {"id": node_id, "flagged": True}
 
     @app.post("/api/garden/node/{node_id}/void")
-    async def garden_void(node_id: str):
-        vault.void(node_id)
-        return {"id": node_id, "status": "void"}
+    async def garden_void(node_id: str, request: Request):
+        ok = vault.void(
+            node_id, source="garden:/void",
+            provenance=(f"origin={request.headers.get('origin', '-')} "
+                        f"host={getattr(request.client, 'host', '?')}"))
+        return {"id": node_id, "status": "void" if ok else "unchanged"}
 
     @app.post("/api/garden/node/{node_id}/promote")
     async def garden_promote(node_id: str):

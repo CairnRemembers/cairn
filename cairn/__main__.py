@@ -240,8 +240,10 @@ def cmd_void(args: list[str]) -> None:
         print("usage: python -m cairn void <node_id>")
         sys.exit(1)
     vault = Vault()
-    vault.void(args[0])
-    print(f"cairn: voided {args[0]}")
+    if vault.void(args[0], source="cli"):
+        print(f"cairn: voided {args[0]} (audited)")
+    else:
+        print(f"cairn: nothing voided — [{args[0]}] not found or already void")
 
 
 def cmd_promote(args: list[str]) -> None:
