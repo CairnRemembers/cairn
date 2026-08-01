@@ -303,6 +303,20 @@ def _tool_note(args: dict) -> str:
     # branch (a)) is the reliable channel here; the folder-name fallback still
     # fires when the server does run in the project. Additive, never guesses.
     tags = (args.get("tags") or []) + ["mcp"]
+    # Relation-integrity gate: authoritative relation tags are CLI-only, where
+    # the target is validated (and, for supersedes, atomically voided). A
+    # generic MCP tag write has neither validation nor authority — accepting
+    # these prefixes would let any connected client forge lineage that
+    # supersede-aware surfaces then trust. FAIL CLOSED: reject the whole note,
+    # write nothing; forged authority is never silently downgraded.
+    _reserved = ("supersedes:", "corrects:", "narrows:", "applies-after:",
+                 "conflicts-with:", "resolves:")
+    bad = [t for t in tags if isinstance(t, str) and t.startswith(_reserved)]
+    if bad:
+        return ("cairn_note: REJECTED — reserved relation tag(s) "
+                f"[{', '.join(bad)}] cannot be written over MCP. Relations "
+                "are authored via the CLI (cairn note --corrects=<id> ...), "
+                "which validates the target. Nothing was written.")
     proj = resolve_project_tag()
     if proj and proj not in tags:
         tags.append(proj)
