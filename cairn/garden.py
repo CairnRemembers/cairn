@@ -513,6 +513,14 @@ def _spawn_embed() -> None:
         pass
 
 
+# Desk soft-clear era boundary: resolved nodes written BEFORE this date may
+# still clear a card by bare 12-hex text mention (the old convention — kept
+# for the existing corpus). Nodes written ON or AFTER it must carry a
+# structured, target-validated `resolves:<id>` tag. Set to the date the
+# candidate integrates; bump at merge time.
+RESOLVED_MENTION_CUTOFF = "2026-08-02"
+
+
 def register_garden(app, vault, current_session_fn) -> None:
     """Mount all /garden routes onto the dashboard's FastAPI app."""
     from fastapi.responses import HTMLResponse, JSONResponse
@@ -1431,16 +1439,31 @@ def register_garden(app, vault, current_session_fn) -> None:
                  "AND COALESCE(tags,'') NOT LIKE '%\"prov:distilled\"%'")
         _LIVE_N = ("AND n.session NOT LIKE 'import-%' "
                    "AND COALESCE(n.tags,'') NOT LIKE '%\"prov:distilled\"%'")
-        # A warning that a later `resolved` node references (by id, anywhere in
-        # its text) has been answered — it leaves the Desk without needing a
-        # void. Append-only: nothing changes on the warning itself.
+        # A warning that a later `resolved` node RESOLVES leaves the Desk
+        # without needing a void. Append-only: nothing changes on the warning.
+        # STRUCTURED SEMANTICS: the authoritative signal is a `resolves:<id>`
+        # tag on the resolved node (CLI: cairn note --kind=resolved
+        # --resolves=<id> — target-validated at write). The old convention —
+        # any bare 12-hex token anywhere in a resolved node's TEXT — was
+        # collision-prone (a git-hash prefix could suppress an unrelated card)
+        # and forgeable by any writer incl. MCP, so it is honored ONLY for
+        # resolved nodes written BEFORE the cutoff below: a bounded
+        # grandfather for the existing corpus, never an open bypass forward.
         import re as _rex
         resolved_refs: set = set()
         for rr in vault.conn.execute(
-                "SELECT query, output_preview FROM nodes "
+                "SELECT timestamp, tags, query, output_preview FROM nodes "
                 "WHERE status='active' AND kind='resolved'"):
-            for fld in (rr["query"], rr["output_preview"]):
-                resolved_refs.update(_rex.findall(r"\b[0-9a-f]{12}\b", fld or ""))
+            try:
+                for _t in json.loads(rr["tags"] or "[]"):
+                    if _t.startswith("resolves:"):
+                        resolved_refs.add(_t.split(":", 1)[1])
+            except Exception:
+                pass
+            if (rr["timestamp"] or "")[:10] < RESOLVED_MENTION_CUTOFF:
+                for fld in (rr["query"], rr["output_preview"]):
+                    resolved_refs.update(
+                        _rex.findall(r"\b[0-9a-f]{12}\b", fld or ""))
 
         # Open loops and Watch are queried SEPARATELY so a pile of high-
         # importance warnings can never crowd real open items out of the
