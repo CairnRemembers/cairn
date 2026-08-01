@@ -72,7 +72,7 @@ def main():
             print(f"cairn: all nodes already embedded")
     except ImportError:
         print("cairn: sentence-transformers not installed — skipping embed")
-        print("       run: python -m pip install sentence-transformers")
+        print('       run: pip install "cairn-remembers[embeddings]"   ·   from source: pip install -e ".[embeddings]"')
     except Exception as e:
         print(f"cairn: embed error — {e}", file=sys.stderr)
 

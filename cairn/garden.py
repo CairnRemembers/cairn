@@ -1643,8 +1643,7 @@ def register_garden(app, vault, current_session_fn) -> None:
         """Undo a mis-clicked done — the append-only way (the DB trigger
         rightly refuses to un-void anything): re-raise the original item as
         a NEW open_item chained to it, and void the accidental done-receipt.
-        History keeps the click AND the regret; the Desk gets the item back.
-        Born the day the owner done'd the provisional patent by accident."""
+        History keeps the click AND the regret; the Desk gets the item back."""
         receipt = vault.get(resolved_id)
         if not receipt or receipt["kind"] != "resolved" or not receipt["parent"]:
             return JSONResponse({"error": "not an undoable done-receipt"},
@@ -4797,7 +4796,7 @@ async function markDone(e, id) {
   }).then(r => r.json()).catch(() => ({}));
   const el = document.querySelector(`.card[data-id="${id}"]`);
   if (el) { el.style.opacity = .3; el.style.pointerEvents = 'none'; }
-  // undo lives in the toast — the patent-misclick lesson: one wrong tap
+  // undo lives in the toast — destructive taps need a takeback: one wrong tap
   // shouldn't need a rescue mission. Undo re-raises the item append-only.
   if (r.resolved) {
     toastUndo('✓ resolved — history kept, desk cleared', async () => {

@@ -33,7 +33,7 @@ MEANING_KINDS = ("decision", "warning", "insight", "idea", "open_item",
 RECENCY_KINDS = MEANING_KINDS + ("conversation_turn", "artifact")
 
 _LAWS = ("local-first - nothing leaves this machine | append-only - void, "
-         "never delete | no external deps | model-agnostic")
+         "never delete | stdlib + numpy | model-agnostic")
 
 _NAVIGATE = ("cairn fetch \"q\" before re-reading files/history | "
              "cairn wander \"topic\" for adjacent ideas | "

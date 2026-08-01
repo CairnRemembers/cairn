@@ -15,7 +15,7 @@ Run:
   python -m cairn dashboard --port=8080
   python -m cairn dashboard --session=2026-06-08
 
-Requires: pip install fastapi uvicorn
+Requires: pip install "cairn-remembers[dashboard]"   ·   from source: pip install -e ".[dashboard]"
 D3.js: loaded from CDN — no npm, no build step.
 """
 from __future__ import annotations
@@ -79,7 +79,7 @@ def run_dashboard(port: int = 7331, session_id: str | None = None,
         import uvicorn
     except ImportError:
         print("cairn: dashboard requires fastapi and uvicorn")
-        print("       pip install fastapi uvicorn")
+        print('       pip install "cairn-remembers[dashboard]"   ·   from source: pip install -e ".[dashboard]"')
         return
 
     import sys

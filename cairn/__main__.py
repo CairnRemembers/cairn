@@ -2062,7 +2062,7 @@ def cmd_doctor(args: list[str]) -> None:
         line(OK, "numpy", "present")
     except Exception:
         line(BAD, "numpy", "MISSING — core retrieval/edges will crash",
-             'pip install -e "."')
+             'pip install cairn-remembers   ·   from source: pip install -e "."')
 
     # dashboard deps
     try:
@@ -2070,7 +2070,7 @@ def cmd_doctor(args: list[str]) -> None:
         line(OK, "dashboard", "fastapi + uvicorn present")
     except Exception:
         line(OPT, "dashboard", "fastapi/uvicorn not installed (dashboard won't run)",
-             'pip install -e ".[dashboard]"')
+             'pip install "cairn-remembers[dashboard]"   ·   from source: pip install -e ".[dashboard]"')
 
     # embedder + model cache
     try:
@@ -2084,7 +2084,7 @@ def cmd_doctor(args: list[str]) -> None:
         line(OK, "embedder", "sentence-transformers" + (" (model cached)" if cached else " — model downloads on first embed"))
     except Exception:
         line(OPT, "embedder", "not installed (search/edges need it)",
-             'pip install -e ".[embeddings]"')
+             'pip install "cairn-remembers[embeddings]"   ·   from source: pip install -e ".[embeddings]"')
 
     # vault — and the foreign/cloud-agent tell
     vault_total = None

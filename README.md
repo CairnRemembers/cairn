@@ -1,8 +1,8 @@
 # Cairn
 
-[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
+[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](https://github.com/CairnRemembers/cairn/blob/v0.3.3/LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
-![Version 0.3.2](https://img.shields.io/badge/version-0.3.2-green)
+![PyPI](https://img.shields.io/pypi/v/cairn-remembers)
 ![Patent pending](https://img.shields.io/badge/patent-pending-orange)
 ![Local-first](https://img.shields.io/badge/local--first-no%20cloud-brightgreen)
 
@@ -22,8 +22,8 @@ can find again, across sessions and across model generations.
 - **Yours** — Cairn sends nothing off your machine. Your chat still goes to whatever model you chose, exactly as it would without Cairn — use a local model and nothing leaves at all.
 
 **Two ways in:**
-- 🧑 **A person setting this up?** Keep reading — [Quick start](#quick-start) takes about 5 minutes. Every option and fix: [QUICKSTART.md](QUICKSTART.md).
-- 🤖 **An AI agent installing Cairn for someone?** → [SETUP_FOR_AGENTS.md](SETUP_FOR_AGENTS.md) is written for you (install, consent, attribution).
+- 🧑 **A person setting this up?** Keep reading — [Quick start](#quick-start) takes about 5 minutes. Every option and fix: [QUICKSTART.md](https://github.com/CairnRemembers/cairn/blob/v0.3.3/QUICKSTART.md).
+- 🤖 **An AI agent installing Cairn for someone?** → [SETUP_FOR_AGENTS.md](https://github.com/CairnRemembers/cairn/blob/v0.3.3/SETUP_FOR_AGENTS.md) is written for you (install, consent, attribution).
 
 ---
 
@@ -56,13 +56,29 @@ There's one extra paste after that — see [Wire up your AI](#wire-up-your-ai).)
 
 ### Or do it yourself
 
-**1 — Get the code** 🖥️
+**1 — Install** 🖥️ *(installs software only — records nothing, the vault starts empty)*
+
+> ⚠️ **Installing `[all]` on Linux / WSL?** Run
+> `pip install torch --index-url https://download.pytorch.org/whl/cpu` **first**, or pip
+> pulls a multi-GB CUDA torch stack you don't need. Windows and macOS torch wheels are
+> already CPU-only.
+
+```bash
+pip install cairn-remembers            # base install
+pip install "cairn-remembers[all]"     # + embedder + dashboard
+```
+
+#### From source
+
+Still the richer path — the installer handles the CPU-torch step for you:
+
+**Get the code** 🖥️
 ```bash
 git clone https://github.com/CairnRemembers/cairn
 cd cairn
 ```
 
-**2 — Install** 🖥️ *(installs software only — records nothing, the vault starts empty)*
+**Run the installer** 🖥️
 ```bash
 # Windows:      .\install.ps1      (blocked? powershell -ExecutionPolicy Bypass -File .\install.ps1)
 # macOS/Linux:  ./install.sh
@@ -70,7 +86,7 @@ cd cairn
 The installer finds Python 3.11+, installs everything (first run downloads PyTorch — the
 lean CPU build on Linux/Windows, a few minutes), and checks itself.
 
-**3 — Wire up your AI.** This is where memory actually turns on, and **each AI needs
+**2 — Wire up your AI.** This is where memory actually turns on, and **each AI needs
 different wiring** — a `y` in setup finishes the job for Claude Code, but *not* for
 Codex or Claude Desktop. Find your AI below and follow it to its ✅.
 
@@ -101,7 +117,7 @@ and 🖥️ `python -X utf8 -m cairn doctor` shows **✓ capture**.
 *Optional — native tools:* Claude Code can already read the vault by running `cairn`
 commands in its shell. For native `cairn_*` tools instead, register the MCP server
 user-wide, pointing at the Python that can `import cairn` (a bare `python` that can't
-is the #1 failure — [prove the path first, QUICKSTART §6a](QUICKSTART.md#6a--tools-via-mcp)):
+is the #1 failure — [prove the path first, QUICKSTART §6a](https://github.com/CairnRemembers/cairn/blob/v0.3.3/QUICKSTART.md#6a--tools-via-mcp)):
 ```bash
 claude mcp add --scope user cairn -- <full-path-to-python> -X utf8 -m cairn mcp
 ```
@@ -112,7 +128,7 @@ claude mcp add --scope user cairn -- <full-path-to-python> -X utf8 -m cairn mcp
    Captures turns live as Codex fires `notify` (deduped by turn id). For a comprehensive
    sweep of everything on disk, run 🖥️ `python -X utf8 -m cairn import codex-sessions --apply` anytime.
 2. **Tools** 📄 — add to `~/.codex/config.toml`, then fully restart Codex
-   ([full §6 walk-through](QUICKSTART.md#6--use-cairn-from-codex)):
+   ([full §6 walk-through](https://github.com/CairnRemembers/cairn/blob/v0.3.3/QUICKSTART.md#6--use-cairn-from-codex)):
 ```toml
 [mcp_servers.cairn]
 command = "<full-path-to-python>"
@@ -122,7 +138,7 @@ tool_timeout_sec = 120
 default_tools_approval_mode = "approve"
 ```
 3. **Habit** 📄 — create `~/.codex/AGENTS.md` and paste the memory protocol from
-   [QUICKSTART §6c](QUICKSTART.md#6--use-cairn-from-codex) so Codex orients, fetches,
+   [QUICKSTART §6c](https://github.com/CairnRemembers/cairn/blob/v0.3.3/QUICKSTART.md#6--use-cairn-from-codex) so Codex orients, fetches,
    and notes **unprompted**. *(Needs piece 2 — the protocol calls those tools.)*
 
 ✅ **Done when:** 🖥️ `python -X utf8 -m cairn codex-hook status` prints **INSTALLED**,
@@ -177,7 +193,7 @@ surfaces have **no ambient capture**; what you ask the AI to `cairn_note` is wha
 
 **By hand** (what the installer runs):
 ```bash
-# Linux / Windows: install the CPU-only PyTorch first, or pip pulls a ~4.6 GB CUDA
+# Linux / WSL: install the CPU-only PyTorch first, or pip pulls a ~4.6 GB CUDA
 # stack you don't need. (Want a GPU build? Install your torch first, then run the
 # line below — it's preserved.) macOS: skip this line — its default wheel is CPU/MPS.
 pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -190,8 +206,6 @@ pip install -e ".[embeddings]"   # no dashboard
 pip install -e ".[dashboard]"    # no embedder
 ```
 Base install is stdlib + `numpy`. Extras add the embedder (`sentence-transformers` — the ~80 MB model downloads once, on first use) and the dashboard (`fastapi` + `uvicorn`).
-
-> **Note:** Cairn installs from this repo — there is no `pip install cairn-remembers` package yet. Clone, then install as above.
 
 **PEP-668 "externally-managed-environment"** (Ubuntu/Debian/Homebrew/WSL): install into a venv first —
 ```bash
@@ -250,15 +264,15 @@ One folder: your vault at **`~/.cairn/`** (that's `cairn.db` — your actual mem
 
 `orient` · `note` · `fetch` · `wander` · `query` · `read` (any node in full) · `dashboard` · `doctor` · `setup` · `connect` / `disconnect` / `capture` · `account` · `backfill` · `sleep` (the maintenance cycle — you run it) · `edges` · `book` · `import`
 
-Full reference with every option: [QUICKSTART.md](QUICKSTART.md).
+Full reference with every option: [QUICKSTART.md](https://github.com/CairnRemembers/cairn/blob/v0.3.3/QUICKSTART.md).
 
 ---
 
 ## License
 
-**Free for personal and non-commercial use** under the [Business Source License 1.1](LICENSE) — read it, run it, modify it, self-host it. **Commercial or business use requires a commercial license** — email **licensing@cairnremembers.com**. Source-available (not OSI "open source"); each release converts to the permissive MIT License on the Change Date in its LICENSE.
+**Free for personal and non-commercial use** under the [Business Source License 1.1](https://github.com/CairnRemembers/cairn/blob/v0.3.3/LICENSE) — read it, run it, modify it, self-host it. **Commercial or business use requires a commercial license** — email **licensing@cairnremembers.com**. Source-available (not OSI "open source"); each release converts to the permissive MIT License on the Change Date in its LICENSE.
 
-Patent pending — a U.S. provisional application (filed 2026-07-07) covers Cairn's core mechanisms. **Cairn Remembers™** is a trademark of James Wescott Maitland IV.
+Patent pending — a U.S. provisional patent application covering Cairn's core mechanisms was filed 2026-07-07. **Cairn Remembers™** is a trademark of James Wescott Maitland IV.
 
 ---
 

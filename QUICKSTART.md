@@ -40,7 +40,7 @@ From the `cairn` folder:
 
 Prefer to do it by hand? That's all the script does:
 ```bash
-# Linux / Windows: CPU-only PyTorch first, or pip pulls a ~4.6 GB CUDA stack you
+# Linux / WSL: CPU-only PyTorch first, or pip pulls a ~4.6 GB CUDA stack you
 # don't need (GPU build? install your torch first — it's kept). macOS: skip this line.
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 

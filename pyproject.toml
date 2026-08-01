@@ -46,12 +46,8 @@ dashboard = [
     "fastapi>=0.110,<1.0",
     "uvicorn>=0.23,<1.0",
 ]
-# everything
-all = [
-    "sentence-transformers>=2.2.0,<6",
-    "fastapi>=0.110,<1.0",
-    "uvicorn>=0.23,<1.0",
-]
+# everything — self-reference so [all] can never drift from the extras above
+all = ["cairn-remembers[embeddings,dashboard]"]
 
 [project.scripts]
 cairn = "cairn.__main__:main"
@@ -63,3 +59,9 @@ include-package-data = true
 where = ["."]
 include = ["cairn*"]
 exclude = ["tests*"]
+
+# Second, independent guarantee (alongside MANIFEST.in) that the 12.4 MB asset
+# payload ships in the wheel — without it, losing the MANIFEST.in line yields a
+# wheel with 0 assets and a dead dashboard.
+[tool.setuptools.package-data]
+cairn = ["assets/**/*"]
