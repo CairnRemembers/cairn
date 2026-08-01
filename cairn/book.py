@@ -599,7 +599,7 @@ def page_one(vault, account: "str | None" = None) -> str:
         # sessions.account stores the canonical Title-case, so match on LOWER().
         acct_sql = " AND session IN (SELECT id FROM sessions WHERE LOWER(account) = LOWER(?))"
         acct_args = [account]
-    lines.append("ACTIVE (this galaxy):" if account else "ACTIVE:")
+    landscape = ["ACTIVE (this galaxy):" if account else "ACTIVE:"]
     dormant = []
     for tag, v in _projects().items():
         # 3-element (aliased) values must not crash page_one — index, don't unpack.
@@ -609,13 +609,14 @@ def page_one(vault, account: "str | None" = None) -> str:
             "AND tags LIKE ? AND timestamp >= ?" + acct_sql,
             [f'%"{tag}"%', week] + acct_args).fetchone()[0]
         if n:
-            lines.append(f"  {name} - {desc} ({n} nodes/14d)")
+            landscape.append(f"  {name} - {desc} ({n} nodes/14d)")
         else:
             dormant.append(name)
-    if not any(line.startswith("  ") for line in lines):
-        lines.append("  (none active in 14d)")
+    if not any(line.startswith("  ") for line in landscape):
+        landscape.append("  (none active in 14d)")
     if dormant:
-        lines.append("DORMANT: " + ", ".join(dormant))
+        landscape.append("DORMANT: " + ", ".join(dormant))
+    warn_lines = []
     warns = c.execute(
         "SELECT id, gist, query FROM nodes WHERE status='active' "
         "AND kind='warning' ORDER BY importance DESC, timestamp DESC "
@@ -627,20 +628,24 @@ def page_one(vault, account: "str | None" = None) -> str:
             ann = vault.relation_annotations([w["id"] for w in warns])
         except Exception:
             ann = {}
-        lines.append("WARNINGS:")
+        warn_lines.append("WARNINGS:")
         for w in warns:
             suffix = f"  ({ann[w['id']]})" if w["id"] in ann else ""
-            lines.append(f"  - {_gist(w)[:100]}{suffix}")
-    lines.append(f"NAVIGATE: {_NAVIGATE}")
-    lines.append(_CLAIM_RULE)
-    lines.append("== last session's protocol follows ==")
-    # cap unchanged at 34 — but the three tail lines (NAVIGATE, CLAIM CHECK,
-    # protocol marker) are REQUIRED: if the landscape above would push them
-    # past the cap, trim landscape lines, never the tail.
-    if len(lines) > 34:
-        tail = lines[-3:]
-        lines = lines[:31] + tail
-    return "\n".join(lines[:34])
+            warn_lines.append(f"  - {_gist(w)[:100]}{suffix}")
+    tail = [f"NAVIGATE: {_NAVIGATE}", _CLAIM_RULE,
+            "== last session's protocol follows =="]
+    # cap unchanged at 34 — SECTION-AWARE assembly: laws/vault head, warnings,
+    # navigation, claim check, and the protocol marker are REQUIRED and always
+    # survive. Only the project landscape may trim, with an honest marker for
+    # what was cut. (Timestamp of the old bug: >28 projects silently pushed
+    # NAVIGATE — and then even WARNINGS — off the end.)
+    budget = 34 - len(lines) - len(warn_lines) - len(tail)
+    if len(landscape) > budget:
+        keep = max(1, budget - 1)          # room for the "+N more" marker
+        cut = len(landscape) - keep
+        landscape = landscape[:keep] + [f"  … +{cut} more project line(s) — "
+                                        f"full landscape: the Garden"]
+    return "\n".join((lines + landscape + warn_lines + tail)[:34])
 
 
 def write_book(vault, out_dir: Optional[Path] = None) -> dict:
