@@ -175,6 +175,49 @@ def test_voided_relation_source_is_ignored(home):
     assert a not in v2.incoming_relations([a])
 
 
+def test_two_connection_race_fails_closed_for_relations(home, capsys):
+    """A relation target voided by ANOTHER connection between validation and
+    write → whole note rolls back, zero mutation (mirror of the supersede
+    race contract). The externally-committed void survives."""
+    import sqlite3
+    main = _fresh_main()
+    from cairn.vault import Vault as _V
+
+    v = _vault()
+    vid = _seed(v)
+    db_path = v.conn.execute("PRAGMA database_list").fetchall()[0]["file"]
+
+    class RacedVault(_V):
+        def write(self, node, commit=True):
+            if any(isinstance(t, str) and t.startswith("corrects:")
+                   for t in (node.tags or [])):
+                foreign = sqlite3.connect(db_path)
+                foreign.execute(
+                    "UPDATE nodes SET status='void' WHERE id=?", (vid,))
+                foreign.commit()
+                foreign.close()
+            return super().write(node, commit=commit)
+
+    before = v.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+    orig_vault = main.Vault
+    main.Vault = RacedVault
+    try:
+        with pytest.raises(SystemExit) as exc:
+            main.cmd_note([f"--corrects={vid}", "raced correction"])
+    finally:
+        main.Vault = orig_vault
+    assert exc.value.code == 1
+    assert "changed state during write" in capsys.readouterr().err
+    check = _vault()
+    # the foreign void SURVIVES; our note never landed
+    assert check.conn.execute("SELECT status FROM nodes WHERE id=?",
+                              (vid,)).fetchone()["status"] == "void"
+    assert check.conn.execute(
+        "SELECT COUNT(*) FROM nodes WHERE tags LIKE ?",
+        (f'%"corrects:{vid}"%',)).fetchone()[0] == 0
+    assert check.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0] == before
+
+
 def test_plain_note_unchanged(home, capsys):
     """Regression guard: notes without relation flags behave exactly as before."""
     main = _fresh_main()

@@ -179,25 +179,33 @@ def cmd_note(args: list[str]) -> None:
         tags           = tags,
     )
 
-    if supersedes:
-        # Successor write + retirement are ONE transaction: if either half
-        # fails, neither lands — no successor without a retired target, no
-        # retired target without its successor. The UPDATE is the same
-        # sanctioned append-only mutation vault.void() performs (the
-        # immutability trigger permits exactly status→void); it runs inside
-        # the shared transaction instead of auto-committing, and the rowcount
-        # guard closes the validate→write race (target voided concurrently →
-        # roll everything back and fail closed).
+    if supersedes or relations:
+        # Successor/relation write + checks are ONE transaction: if any half
+        # fails, nothing lands. For supersede: the UPDATE is the same
+        # sanctioned append-only mutation vault.void() performs; the rowcount
+        # guard closes the validate→write race. For relations: each target is
+        # RE-CHECKED inside the transaction (annotate-only — no void), so a
+        # target voided between validation and write also fails closed.
         try:
             node = vault.write(micro, commit=False)
-            cur = vault.conn.execute(
-                "UPDATE nodes SET status='void' WHERE id=? AND status!='void'",
-                (supersedes,))
-            if cur.rowcount != 1:
-                vault.conn.rollback()
-                print(f"cairn: error — supersede target [{supersedes}] changed "
-                      f"state during write; nothing written", file=sys.stderr)
-                sys.exit(1)
+            if supersedes:
+                cur = vault.conn.execute(
+                    "UPDATE nodes SET status='void' WHERE id=? AND status!='void'",
+                    (supersedes,))
+                if cur.rowcount != 1:
+                    vault.conn.rollback()
+                    print(f"cairn: error — supersede target [{supersedes}] changed "
+                          f"state during write; nothing written", file=sys.stderr)
+                    sys.exit(1)
+            for rel, target in relations:
+                row = vault.conn.execute(
+                    "SELECT status FROM nodes WHERE id=?", (target,)).fetchone()
+                if row is None or row["status"] == "void":
+                    vault.conn.rollback()
+                    print(f"cairn: error — {rel} target [{target}] changed "
+                          f"state during write; nothing written",
+                          file=sys.stderr)
+                    sys.exit(1)
             vault.conn.commit()
         except BaseException:
             vault.conn.rollback()
