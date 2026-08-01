@@ -306,6 +306,16 @@ def fetch_pack(
     v.record_shown(shown, channel=channel, session=_current_session(),
                    trigger=query[:80])
 
+    # annotate-only relations: decoration on the frozen ranking, never
+    # selection. Absent when no relations exist (byte-identical output).
+    try:
+        ann = v.relation_annotations(shown)
+        for r in pack + linked:
+            if r.get("id") in ann:
+                r["relation"] = ann[r["id"]]
+    except Exception:
+        pass
+
     return {"query": query, "results": pack, "linked": linked,
             "tokens_est": used, "count": len(pack)}
 
@@ -405,6 +415,14 @@ def drift_pack(
     v.record_shown([r["id"] for r in results], channel="drift",
                    session=_current_session(), trigger=query[:80])
 
+    try:
+        ann = v.relation_annotations([r["id"] for r in results])
+        for r in results:
+            if r["id"] in ann:
+                r["relation"] = ann[r["id"]]
+    except Exception:
+        pass
+
     return {"query": query, "results": results,
             "seeds": [s.get("gist") or (s.get("query") or "")[:60]
                       for s in seeds[:3]]}
@@ -430,6 +448,8 @@ def render_drift(pack: dict) -> str:
         lines.append(f"~ [{r['kind']}]{topic} {r['gist']}")
         lines.append(f"    {r['hops']} hop(s) out, wander score {r['score']} "
                      f"(id {r['id']}){tag}")
+        if r.get("relation"):
+            lines.append(f"    {r['relation']}")
     return "\n".join(lines)
 
 
@@ -444,6 +464,8 @@ def render_pack(pack: dict) -> str:
     for r in pack["results"]:
         tag = f"  · {r['origin']}" if r.get("origin") else ""
         lines.append(f"## [{r['kind']}] {r['source']}  (score {r['score']}){tag}")
+        if r.get("relation"):
+            lines.append(f"  {r['relation']}")
         if r["text"]:
             lines.append(r["text"])
         else:
@@ -454,5 +476,7 @@ def render_pack(pack: dict) -> str:
         for r in pack["linked"]:
             lines.append(f"  ~ [{r['kind']}] {r['gist']}   "
                          f"(edge {r['weight']}, id {r['id']})")
+            if r.get("relation"):
+                lines.append(f"    {r['relation']}")
         lines.append("")
     return "\n".join(lines)

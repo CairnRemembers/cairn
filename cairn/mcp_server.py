@@ -284,9 +284,12 @@ def _tool_search(args: dict) -> str:
     if not rows:
         return "no matches."
     out = [f"{len(rows)} results for {args['query']!r}:"]
+    ann = v.relation_annotations([d.get("id") for d in rows])
     for d in rows:
         gist = d.get("gist") or (d.get("query") or "")[:80]
         out.append(f"  [{d.get('id')}] ({d.get('kind')}, {d.get('score',0):.2f}) {gist}")
+        if d.get("id") in ann:
+            out.append(f"      {ann[d.get('id')]}")
     out.append("\nuse cairn_read for full text of what matters "
                "(raise max_chars for very long nodes).")
     return "\n".join(out)
@@ -383,8 +386,11 @@ def _tool_recent(args: dict) -> str:
     if not rows:
         return "vault is empty."
     out = ["working set (most recent):"]
+    ann = v.relation_annotations([r["id"] for r in rows])
     for r in rows:
         out.append(f"  [{r['id']}] ({r['kind']}) {(r['query'] or '')[:90]}")
+        if r["id"] in ann:
+            out.append(f"      {ann[r['id']]}")
     out.append("\nfull text of any of these: cairn_read with the id(s) "
                "— raise max_chars for very long nodes.")
     return "\n".join(out)
@@ -438,6 +444,20 @@ def _tool_read(args: dict) -> str:
         if r["status"] != "active":
             out.append(f"   ⚠ status={r['status']} — retired from ranked surfaces; "
                        f"historical record, check for correction/resolved notes.")
+        # relations, both directions — the back-pointer the void label used to
+        # tell readers to go hunt for manually. Absent when none exist.
+        _ann = v.relation_annotations([r["id"]])
+        if r["id"] in _ann:
+            out.append(f"   {_ann[r['id']]}")
+        try:
+            import json as _json
+            for _t in _json.loads(r["tags"] or "[]"):
+                for _p in ("supersedes", "corrects", "narrows",
+                           "applies-after", "conflicts-with", "resolves"):
+                    if _t.startswith(_p + ":"):
+                        out.append(f"   → {_p} [{_t.split(':', 1)[1]}]")
+        except Exception:
+            pass
         if r["tags"]:
             out.append(f"   tags: {r['tags']}")
 
@@ -517,11 +537,14 @@ def _tool_logs(args: dict) -> str:
     if not rows:
         return "live log: no matching nodes."
     out = [f"live log — newest first ({len(rows)}):"]
+    ann = v.relation_annotations([r["id"] for r in rows])
     for r in rows:
         mark = "·" if r["emb"] else "○"
         t = (r["timestamp"] or "?")[11:16]
         sess = (r["session"] or "")[:26]
         out.append(f"  {mark} [{r['id']}] {t} {r['kind']}/{r['speaker'] or '?'} ({sess}) {r['gist']}")
+        if r["id"] in ann:
+            out.append(f"      {ann[r['id']]}")
     out.append("\n○ = not yet embedded (invisible to fetch/search until sleep). "
                "Full text: cairn_read with the id(s) — raise max_chars for "
                "very long nodes.")

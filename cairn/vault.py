@@ -1305,6 +1305,31 @@ class Vault:
             out[k] = sorted(set(out[k]))
         return out
 
+    _RELATION_PHRASES = {
+        "supersedes":     "superseded by [{0}]",
+        "corrects":       "corrected by [{0}] — read it first",
+        "narrows":        "scope narrowed by [{0}]",
+        "applies-after":  "later state in [{0}]",
+        "conflicts-with": "conflicts with [{0}] — read both",
+    }
+
+    def relation_annotations(self, ids) -> dict:
+        """
+        One display line per annotated node: {id: '⚠ corrected by [x] — …'}.
+        Empty dict when no relations exist — every surface that appends these
+        stays BYTE-IDENTICAL to its pre-relation output in that case.
+        Never raises: annotation is decoration, not selection.
+        """
+        try:
+            rel = self.incoming_relations(ids)
+        except Exception:
+            return {}
+        return {
+            nid: "⚠ " + " · ".join(
+                self._RELATION_PHRASES[p].format(src) for p, src in pairs)
+            for nid, pairs in rel.items() if pairs
+        }
+
     def flag(self, node_id: str) -> None:
         self.conn.execute(
             "UPDATE nodes SET flagged=1 WHERE id=?", (node_id,)

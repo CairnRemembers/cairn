@@ -610,13 +610,20 @@ def page_one(vault, account: "str | None" = None) -> str:
     if dormant:
         lines.append("DORMANT: " + ", ".join(dormant))
     warns = c.execute(
-        "SELECT gist, query FROM nodes WHERE status='active' "
+        "SELECT id, gist, query FROM nodes WHERE status='active' "
         "AND kind='warning' ORDER BY importance DESC, timestamp DESC "
         "LIMIT 3").fetchall()
     if warns:
+        # inline relation suffix — a corrected warning names its correction
+        # right in the banner (same line: the 34-line cap never grows).
+        try:
+            ann = vault.relation_annotations([w["id"] for w in warns])
+        except Exception:
+            ann = {}
         lines.append("WARNINGS:")
         for w in warns:
-            lines.append(f"  - {_gist(w)[:100]}")
+            suffix = f"  ({ann[w['id']]})" if w["id"] in ann else ""
+            lines.append(f"  - {_gist(w)[:100]}{suffix}")
     lines.append(f"NAVIGATE: {_NAVIGATE}")
     lines.append("== last session's protocol follows ==")
     return "\n".join(lines[:34])

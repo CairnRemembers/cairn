@@ -564,6 +564,18 @@ def cmd_read(args: list[str]) -> None:
         if r["status"] != "active":
             print(f"   ⚠ status={r['status']} — retired from ranked surfaces; "
                   f"historical record.")
+        # relations, both directions — absent when none exist
+        _ann = vault.relation_annotations([r["id"]])
+        if r["id"] in _ann:
+            print(f"   {_ann[r['id']]}")
+        try:
+            for _t in json.loads(r["tags"] or "[]"):
+                for _p in ("supersedes", "corrects", "narrows",
+                           "applies-after", "conflicts-with", "resolves"):
+                    if _t.startswith(_p + ":"):
+                        print(f"   → {_p} [{_t.split(':', 1)[1]}]")
+        except Exception:
+            pass
         if r["tags"]:
             print(f"   tags: {r['tags']}")
         def _p(label, text):
