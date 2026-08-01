@@ -27,6 +27,14 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(h))
     monkeypatch.setenv("USERPROFILE", str(h))
     monkeypatch.setenv("CAIRN_CAPTURE", "0")
+    # Env vars alone do NOT isolate: cairn.vault.VAULT_ROOT was bound to the
+    # real ~/.cairn when the module was first imported, so a bare Vault() (or
+    # the one inside cmd_import_session) writes into the LIVE vault. Rebind
+    # the module globals so isolation actually holds (2026-08-01 contamination
+    # incident; recurs the July 4 leak, vault node 6f6ceef0db44).
+    import cairn.vault as _cv
+    monkeypatch.setattr(_cv, "VAULT_ROOT", h / ".cairn")
+    monkeypatch.setattr(_cv, "DB_PATH", h / ".cairn" / "cairn.db")
     return h
 
 
@@ -133,6 +141,11 @@ def test_actual_import_session_shape_cannot_reopen_grandfather(home,
     importlib.reload(main)
     from cairn.vault import Vault as _V, MicroNode
     hv = _V()
+    # Regression guard for the 2026-08-01 contamination incident: the bare
+    # Vault() above MUST land in the fixture's temp home, never the real vault.
+    assert hv.db_path.resolve().is_relative_to(tmp_path.resolve()), (
+        f"ISOLATION FAILURE: test vault opened at {hv.db_path} — "
+        "refusing to run against the live vault")
     w = hv.write(MicroNode(session="s", kind="warning",
                            query="live warning", output_preview="live warning",
                            model="t", tags=["t"])).id
