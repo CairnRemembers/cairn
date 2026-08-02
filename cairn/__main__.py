@@ -2353,7 +2353,13 @@ def cmd_import_session(args: list[str]) -> None:
         except Exception:
             continue          # unparseable lines are skipped (+counted) at write time
         tags = rec.get("tags")
+        if tags is None:
+            continue
         if not isinstance(tags, list):
+            # a string/dict tags field would be silently discarded at write
+            # time — that is a downgrade, and downgrades are forbidden here
+            violations.append(f"line {n}: tags field must be a list, "
+                              f"got {type(tags).__name__}")
             continue
         for t in tags:
             if not isinstance(t, str):
@@ -2361,17 +2367,18 @@ def cmd_import_session(args: list[str]) -> None:
             elif t.startswith(_reserved):
                 violations.append(f"line {n}: reserved relation tag '{t}'")
     if violations:
-        print("cairn: import-session REJECTED — nothing was imported:")
+        err = sys.stderr
+        print("cairn: import-session REJECTED — nothing was imported:", file=err)
         for v in violations[:20]:
-            print(f"       {v}")
+            print(f"       {v}", file=err)
         if len(violations) > 20:
-            print(f"       … and {len(violations) - 20} more")
+            print(f"       … and {len(violations) - 20} more", file=err)
         print("       relation tags ("
               + ", ".join(f"{p}:" for p in RESERVED_RELATION_PREFIXES)
-              + ") are authored via the CLI")
+              + ") are authored via the CLI", file=err)
         print("       (cairn note --corrects=<id> ...), which validates the "
-              "target; imports may never carry them.")
-        return
+              "target; imports may never carry them.", file=err)
+        sys.exit(1)
 
     vault = Vault()
     refmap, n_ok, n_bad = {}, 0, 0

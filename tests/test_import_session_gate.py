@@ -49,6 +49,14 @@ def _import(path, session="imported-chat"):
                              "--date=2026-07-10"])
 
 
+def _import_rejected(path, capsys, session="imported-chat"):
+    """A rejected import must exit NONZERO with the error on STDERR."""
+    with pytest.raises(SystemExit) as e:
+        _import(path, session=session)
+    assert e.value.code not in (0, None)
+    return capsys.readouterr().err
+
+
 def _counts(vault):
     n = vault.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
     s = vault.conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
@@ -71,9 +79,8 @@ def test_reserved_tag_rejects_entire_import(home, tmp_path, capsys, prefix):
     before = _counts(vault)
     evil = dict(CLEAN, kind="resolved", text=f"handled {w} long ago",
                 tags=[f"{prefix}:{w}"])
-    _import(_jsonl(tmp_path, [CLEAN, evil]))          # one clean + one hostile
-    out = capsys.readouterr().out
-    assert "REJECTED" in out and f"{prefix}:" in out
+    err = _import_rejected(_jsonl(tmp_path, [CLEAN, evil]), capsys)
+    assert "REJECTED" in err and f"{prefix}:" in err
     # the WHOLE file is refused — the clean line must not slip in either
     assert _counts(vault) == before
     assert vault.conn.execute(
@@ -84,11 +91,30 @@ def test_reserved_tag_rejects_entire_import(home, tmp_path, capsys, prefix):
 def test_non_string_tag_rejects_entire_import(home, tmp_path, capsys):
     vault = Vault()
     before = _counts(vault)
-    _import(_jsonl(tmp_path, [dict(CLEAN, tags=["ok", 42]),
-                              dict(CLEAN, tags=[["nested"]])]))
-    out = capsys.readouterr().out
-    assert "REJECTED" in out and "non-string tag" in out
+    err = _import_rejected(_jsonl(tmp_path, [dict(CLEAN, tags=["ok", 42]),
+                                             dict(CLEAN, tags=[["nested"]])]),
+                           capsys)
+    assert "REJECTED" in err and "non-string tag" in err
     assert _counts(vault) == before
+
+
+def test_non_list_tags_field_rejects_entire_import(home, tmp_path, capsys):
+    # a string/dict tags field would be silently DISCARDED at write time —
+    # that's a downgrade; the whole import must be refused instead
+    vault = Vault()
+    before = _counts(vault)
+    err = _import_rejected(
+        _jsonl(tmp_path, [dict(CLEAN, tags="resolves:aaaaaaaaaaaa"),
+                          dict(CLEAN, tags={"k": "v"})]), capsys)
+    assert "REJECTED" in err and "must be a list" in err
+    assert "str" in err and "dict" in err
+    assert _counts(vault) == before
+
+
+def test_null_or_absent_tags_field_is_fine(home, tmp_path, capsys):
+    rec_no_tags = {k: v for k, v in CLEAN.items() if k != "tags"}
+    _import(_jsonl(tmp_path, [rec_no_tags, dict(CLEAN, tags=None)]))
+    assert "imported 2 node(s)" in capsys.readouterr().out
 
 
 def test_rejection_happens_before_the_vault_is_opened(home, tmp_path, capsys):
@@ -96,17 +122,18 @@ def test_rejection_happens_before_the_vault_is_opened(home, tmp_path, capsys):
     # database file itself must not exist after a rejected import.
     db = home / ".cairn" / "cairn.db"
     assert not db.exists()
-    _import(_jsonl(tmp_path, [dict(CLEAN, tags=[f"resolves:aaaaaaaaaaaa"])]))
-    assert "REJECTED" in capsys.readouterr().out
+    err = _import_rejected(
+        _jsonl(tmp_path, [dict(CLEAN, tags=[f"resolves:aaaaaaaaaaaa"])]), capsys)
+    assert "REJECTED" in err
     assert not db.exists()
 
 
 def test_rejection_never_silently_strips(home, tmp_path, capsys):
     # The forbidden tag must be NAMED in the error — a stripped-and-imported
     # node would be a silent downgrade, which the policy forbids.
-    _import(_jsonl(tmp_path, [dict(CLEAN, tags=["corrects:bbbbbbbbbbbb"])]))
-    out = capsys.readouterr().out
-    assert "corrects:bbbbbbbbbbbb" in out and "nothing was imported" in out.lower()
+    err = _import_rejected(
+        _jsonl(tmp_path, [dict(CLEAN, tags=["corrects:bbbbbbbbbbbb"])]), capsys)
+    assert "corrects:bbbbbbbbbbbb" in err and "nothing was imported" in err.lower()
 
 
 # ── the legitimate path still works ──────────────────────────────────────────
@@ -166,3 +193,69 @@ def test_resolves_pointing_at_missing_target_never_raises(home):
     rel = vault.incoming_relations(["ffffffffffff"])  # target id never existed
     assert isinstance(rel, dict)
     assert isinstance(vault.relation_annotations(["ffffffffffff"]), dict)
+
+
+# ── the validated author path: CLI `cairn note --resolves=<id>` ──────────────
+
+def _warn(vault, text="watch the boiler"):
+    return vault.write(MicroNode(session="s", kind="warning", query=text,
+                                 output_preview=text, model="t",
+                                 tags=["t"])).id
+
+
+def _note(args):
+    import cairn.__main__ as main
+    main.cmd_note(args)
+
+
+def _resolves_count(vault, target):
+    return vault.conn.execute(
+        "SELECT COUNT(*) FROM nodes WHERE tags LIKE ?",
+        (f'%"resolves:{target}"%',)).fetchone()[0]
+
+
+def test_cli_resolves_active_target_succeeds(home, capsys):
+    vault = Vault()
+    w = _warn(vault)
+    _note([f"--resolves={w}", "closed", "it", "properly"])
+    capsys.readouterr()
+    assert _resolves_count(vault, w) == 1
+    # annotate-only: the target STAYS active — resolves never demotes
+    assert vault.conn.execute("SELECT status FROM nodes WHERE id=?",
+                              (w,)).fetchone()["status"] == "active"
+
+
+def test_cli_resolves_reverse_rendering(home, capsys):
+    vault = Vault()
+    w = _warn(vault)
+    _note([f"--resolves={w}", "handled", "for", "good"])
+    capsys.readouterr()
+    ann = vault.relation_annotations([w])
+    assert w in ann and "resolved by" in ann[w]
+
+
+def test_cli_resolves_already_void_target_rejected(home, capsys):
+    vault = Vault()
+    w = _warn(vault)
+    assert vault.void(w, source="test", provenance="cli-resolves test")
+    before = vault.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+    with pytest.raises(SystemExit) as e:
+        _note([f"--resolves={w}", "too", "late"])
+    assert e.value.code not in (0, None)
+    assert "already" in capsys.readouterr().err      # CLI errors go to stderr
+    # fail closed: the note itself must not have been written
+    assert vault.conn.execute(
+        "SELECT COUNT(*) FROM nodes").fetchone()[0] == before
+    assert _resolves_count(vault, w) == 0
+
+
+def test_cli_resolves_missing_target_zero_mutation(home, capsys):
+    vault = Vault()
+    before = vault.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+    with pytest.raises(SystemExit) as e:
+        _note(["--resolves=eeeeeeeeeeee", "ghost", "closure"])
+    assert e.value.code not in (0, None)
+    assert "not found" in capsys.readouterr().err    # CLI errors go to stderr
+    assert vault.conn.execute(
+        "SELECT COUNT(*) FROM nodes").fetchone()[0] == before
+    assert _resolves_count(vault, "eeeeeeeeeeee") == 0
