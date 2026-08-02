@@ -29,7 +29,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cairn.vault import Vault, MicroNode
+from cairn.vault import Vault, MicroNode, RESERVED_RELATION_PREFIXES
 
 VALID_KINDS = {
     "note":              "general observation",
@@ -574,8 +574,7 @@ def cmd_read(args: list[str]) -> None:
             for _t in json.loads(r["tags"] or "[]"):
                 if not isinstance(_t, str):
                     continue
-                for _p in ("supersedes", "corrects", "narrows",
-                           "applies-after", "conflicts-with", "resolves"):
+                for _p in RESERVED_RELATION_PREFIXES:
                     if _t.startswith(_p + ":"):
                         print(f"   → {_p} [{_t.split(':', 1)[1]}]")
         except Exception:
@@ -2335,9 +2334,48 @@ def cmd_import_session(args: list[str]) -> None:
     except Exception:
         base = datetime.now(timezone.utc)
 
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+
+    # ── PREFLIGHT: the import door is a write path and must fail closed ──────
+    # Reserved relation tags assert authority the Desk and every retrieval
+    # surface trust; MCP and CLI note already reject them. A JSONL line
+    # carrying resolves:<id> could otherwise silently clear a live warning.
+    # Whole-file check BEFORE the vault is even opened: any violation rejects
+    # the ENTIRE import — zero database mutations, nothing silently stripped.
+    _reserved = tuple(f"{p}:" for p in RESERVED_RELATION_PREFIXES)
+    violations = []
+    for n, raw in enumerate(lines, 1):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except Exception:
+            continue          # unparseable lines are skipped (+counted) at write time
+        tags = rec.get("tags")
+        if not isinstance(tags, list):
+            continue
+        for t in tags:
+            if not isinstance(t, str):
+                violations.append(f"line {n}: non-string tag {t!r}")
+            elif t.startswith(_reserved):
+                violations.append(f"line {n}: reserved relation tag '{t}'")
+    if violations:
+        print("cairn: import-session REJECTED — nothing was imported:")
+        for v in violations[:20]:
+            print(f"       {v}")
+        if len(violations) > 20:
+            print(f"       … and {len(violations) - 20} more")
+        print("       relation tags ("
+              + ", ".join(f"{p}:" for p in RESERVED_RELATION_PREFIXES)
+              + ") are authored via the CLI")
+        print("       (cairn note --corrects=<id> ...), which validates the "
+              "target; imports may never carry them.")
+        return
+
     vault = Vault()
     refmap, n_ok, n_bad = {}, 0, 0
-    for i, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines()):
+    for i, line in enumerate(lines):
         line = line.strip()
         if not line:
             continue

@@ -743,6 +743,18 @@ class MicroNode:
                 f"{struggle_tag}{chain_tag}")
 
 
+# THE reserved-relation-prefix policy — single source of truth. A tag beginning
+# with any of these prefixes asserts authority that supersede/annotation-aware
+# surfaces trust (the Desk clears warnings on resolves:, retrieval renders
+# corrects:/supersedes: as lineage). Only validated author paths may write them
+# (CLI `cairn note --corrects=<id> ...`, which checks the target); EVERY other
+# write door — MCP, import-session, future ingest paths — must reject tags
+# carrying these prefixes, never silently strip them. Rendering (Vault below)
+# and rejection (mcp_server, cmd_import_session) both derive from this tuple.
+RESERVED_RELATION_PREFIXES = ("supersedes", "corrects", "narrows",
+                              "applies-after", "conflicts-with", "resolves")
+
+
 class Vault:
     """
     The store. Append-only, immutable, episodic.
@@ -1294,11 +1306,13 @@ class Vault:
             raise
 
     # Relation prefixes carried in tags. "supersedes" retires its target
-    # (cmd_note voids it atomically); the other four are ANNOTATE-ONLY —
-    # targets stay active, ranked, and visible. Tags are the durable store
-    # (the edges table is derived and wiped on every rebuild).
-    RELATION_PREFIXES = ("supersedes", "corrects", "narrows",
-                        "applies-after", "conflicts-with")
+    # (cmd_note voids it atomically); "resolves" soft-clears Desk warnings;
+    # the rest are ANNOTATE-ONLY — targets stay active, ranked, and visible.
+    # Tags are the durable store (the edges table is derived and wiped on
+    # every rebuild). Same tuple as the write-door rejection policy: anything
+    # rendered as trusted lineage must be impossible to forge on unvalidated
+    # paths.
+    RELATION_PREFIXES = RESERVED_RELATION_PREFIXES
 
     def incoming_relations(self, ids) -> dict:
         """
@@ -1355,6 +1369,7 @@ class Vault:
         "narrows":        "scope narrowed by [{0}]",
         "applies-after":  "later state in [{0}]",
         "conflicts-with": "conflicts with [{0}] — read both",
+        "resolves":       "resolved by [{0}]",
     }
 
     def relation_annotations(self, ids) -> dict:

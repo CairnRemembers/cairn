@@ -322,8 +322,8 @@ def _tool_note(args: dict) -> str:
     # these prefixes would let any connected client forge lineage that
     # supersede-aware surfaces then trust. FAIL CLOSED: reject the whole note,
     # write nothing; forged authority is never silently downgraded.
-    _reserved = ("supersedes:", "corrects:", "narrows:", "applies-after:",
-                 "conflicts-with:", "resolves:")
+    from cairn.vault import RESERVED_RELATION_PREFIXES
+    _reserved = tuple(f"{p}:" for p in RESERVED_RELATION_PREFIXES)
     bad = [t for t in tags if isinstance(t, str) and t.startswith(_reserved)]
     if bad:
         return ("cairn_note: REJECTED — reserved relation tag(s) "
@@ -461,11 +461,11 @@ def _tool_read(args: dict) -> str:
             out.append(f"   {_ann[r['id']]}")
         try:
             import json as _json
+            from cairn.vault import RESERVED_RELATION_PREFIXES as _rel
             for _t in _json.loads(r["tags"] or "[]"):
                 if not isinstance(_t, str):
                     continue
-                for _p in ("supersedes", "corrects", "narrows",
-                           "applies-after", "conflicts-with", "resolves"):
+                for _p in _rel:
                     if _t.startswith(_p + ":"):
                         out.append(f"   → {_p} [{_t.split(':', 1)[1]}]")
         except Exception:
