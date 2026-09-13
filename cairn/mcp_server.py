@@ -40,8 +40,14 @@ import os
 import sys
 from datetime import datetime, timezone
 
-PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "cairn", "version": "1.0.0"}
+PROTOCOL_VERSION = "2024-11-05"   # the MCP spec revision we speak (NOT our version)
+try:
+    from cairn import __version__ as _CAIRN_VERSION
+except Exception:
+    _CAIRN_VERSION = "0.0.0+source"
+# serverInfo.version is THIS server's version — keep it tied to the package so it
+# never drifts (was a hard-coded "1.0.0" that outran the real 0.3.x release).
+SERVER_INFO = {"name": "cairn", "version": _CAIRN_VERSION}
 
 # ── tool schemas (advertised to the client) ──────────────────────────────────
 TOOLS = [
@@ -261,29 +267,109 @@ def _session() -> str:
     return datetime.now(timezone.utc).strftime("mcp-%Y-%m-%d")
 
 
+# ── argument validation ───────────────────────────────────────────────────────
+# The tools return their content as a plain string, so a bad argument comes back
+# as a readable, self-correcting message (the agent reads it and retries) rather
+# than a KeyError surfacing as the cryptic "cairn error: query", or a bare int()
+# ValueError. Deliberately NO upper clamp on counts/budgets: a deep, explicit
+# read ("everything since this morning") is a real, supported need — we reject
+# only garbage and non-positive values, never a large honest one.
+
+class _ErrText(str):
+    """A tool return that IS a plain string (so direct callers and tests keep
+    working) but is typed as a failure. handle() flags isError:true on these
+    without substring-sniffing the text — a successful result that merely quotes
+    the words 'cairn error' stays a success."""
+    __slots__ = ()
+
+
+def _req_query(args: dict, key: str = "query"):
+    """(query, None) or (None, _ErrText). Required, must be a non-empty string."""
+    q = args.get(key)
+    if not isinstance(q, str) or not q.strip():
+        return None, _ErrText(
+            f"cairn error: '{key}' is required and must be a non-empty string — "
+            f"pass what you want to find (e.g. {key}=\"auth bug\"). "
+            f"Nothing was searched.")
+    return q, None
+
+
+def _pos_int(args: dict, key: str, default: int):
+    """(value, None) or (None, _ErrText). Keeps the default when the key is
+    absent or null; otherwise requires a WHOLE number >= 1. No ceiling — a large
+    explicit count is honored. Rejects bool/fractional/garbage (True and 1.9 are
+    not counts), while a positive integer or its numeric-string form is fine."""
+    if key not in args or args.get(key) is None:
+        return default, None
+    raw = args.get(key)
+
+    def _bad():
+        return None, _ErrText(
+            f"cairn error: '{key}' must be a whole number 1 or more (got "
+            f"{raw!r}); omit it for the default of {default}.")
+
+    if isinstance(raw, bool):                      # bool is a subclass of int
+        return _bad()
+    if isinstance(raw, int):
+        n = raw
+    elif isinstance(raw, float):
+        if not raw.is_integer():
+            return _bad()
+        n = int(raw)
+    elif isinstance(raw, str):
+        try:
+            n = int(raw.strip())                   # '12' ok, '1.9'/'x' rejected
+        except (TypeError, ValueError):
+            return _bad()
+    else:
+        return _bad()
+    if n < 1:
+        return _bad()
+    return n, None
+
+
 def _tool_fetch(args: dict) -> str:
     from cairn.retrieve import fetch_pack, render_pack
-    pack = fetch_pack(args["query"], vault=_vault(),
-                      budget_tokens=int(args.get("budget_tokens", 1500)),
+    query, err = _req_query(args)
+    if err:
+        return err
+    budget, err = _pos_int(args, "budget_tokens", 1500)
+    if err:
+        return err
+    pack = fetch_pack(query, vault=_vault(),
+                      budget_tokens=budget,
                       account=(args.get("account") or None),
-                      channel="mcp_fetch")
+                      channel="mcp_fetch",
+                      session=_session())   # honest per-connection receipt (S8)
     return render_pack(pack)
 
 
 def _tool_wander(args: dict) -> str:
     from cairn.retrieve import drift_pack, render_drift
-    pack = drift_pack(args["query"], vault=_vault(),
-                      hops=max(1, min(5, int(args.get("hops", 3)))),
-                      k=max(1, min(40, int(args.get("k", 10)))))
+    query, err = _req_query(args)
+    if err:
+        return err
+    # hops/k stay clamped: a graph walk deeper than 5 hops or wider than 40 is a
+    # runaway, not a deep read — the bound is the design, not a stinginess.
+    pack = drift_pack(query, vault=_vault(),
+                      hops=max(1, min(5, int(args.get("hops", 3) or 3))),
+                      k=max(1, min(40, int(args.get("k", 10) or 10))),
+                      session=_session())   # honest per-connection receipt (S8)
     return render_drift(pack)
 
 
 def _tool_search(args: dict) -> str:
     v = _vault()
-    rows = v.query_episodic(args["query"], k=int(args.get("k", 10)))
+    query, err = _req_query(args)
+    if err:
+        return err
+    k, err = _pos_int(args, "k", 10)
+    if err:
+        return err
+    rows = v.query_episodic(query, k=k)
     if not rows:
         return "no matches."
-    out = [f"{len(rows)} results for {args['query']!r}:"]
+    out = [f"{len(rows)} results for {query!r}:"]
     ann = v.relation_annotations([d.get("id") for d in rows])
     for d in rows:
         gist = d.get("gist") or (d.get("query") or "")[:80]
@@ -313,7 +399,7 @@ def _tool_note(args: dict) -> str:
     # set silently vanishing — a suppression vector, not just a bug).
     nonstr = [t for t in raw_tags if not isinstance(t, str)]
     if nonstr:
-        return ("cairn_note: REJECTED — tags must be strings (got "
+        return _ErrText("cairn_note: REJECTED — tags must be strings (got "
                 f"{[type(t).__name__ for t in nonstr]}). Nothing was written.")
     tags = raw_tags + ["mcp"]
     # Relation-integrity gate: authoritative relation tags are CLI-only, where
@@ -326,7 +412,7 @@ def _tool_note(args: dict) -> str:
     _reserved = tuple(f"{p}:" for p in RESERVED_RELATION_PREFIXES)
     bad = [t for t in tags if isinstance(t, str) and t.startswith(_reserved)]
     if bad:
-        return ("cairn_note: REJECTED — reserved relation tag(s) "
+        return _ErrText("cairn_note: REJECTED — reserved relation tag(s) "
                 f"[{', '.join(bad)}] cannot be written over MCP. Relations "
                 "are authored via the CLI (cairn note --corrects=<id> ...), "
                 "which validates the target. Nothing was written.")
@@ -386,7 +472,12 @@ def _tool_orient(args: dict) -> str:
 
 def _tool_recent(args: dict) -> str:
     v = _vault()
-    limit = int(args.get("limit", 12))
+    # No upper clamp: "everything live since this morning" is a real request.
+    # But a negative slips through to SQLite as LIMIT -1 = NO limit (the whole
+    # working set), and a non-number would crash — so parse safely, default 12.
+    limit, err = _pos_int(args, "limit", 12)
+    if err:
+        return err
     rows = v.conn.execute("""
         SELECT id, kind, query FROM nodes
         WHERE status='active'
@@ -394,7 +485,10 @@ def _tool_recent(args: dict) -> str:
         ORDER BY timestamp DESC LIMIT ?
     """, (limit,)).fetchall()
     if not rows:
-        return "vault is empty."
+        # The vault may be full of other kinds (turns, procedures); this surface
+        # only shows the live working set, so say that, not "empty".
+        return ("nothing in the working set (no active decisions, open items, "
+                "warnings, ideas, or resolved notes).")
     out = ["working set (most recent):"]
     ann = v.relation_annotations([r["id"] for r in rows])
     for r in rows:
@@ -435,11 +529,20 @@ def _tool_read(args: dict) -> str:
     spent = 0
     skipped = []
     out = []
+    _cols = ("SELECT id, kind, status, session, speaker, model, timestamp, tags, "
+             "       query, output_preview, episodic_text FROM nodes ")
     for want in ids:
-        rows = v.conn.execute(
-            "SELECT id, kind, status, session, speaker, model, timestamp, tags, "
-            "       query, output_preview, episodic_text "
-            "FROM nodes WHERE id LIKE ? || '%' LIMIT 3", (want,)).fetchall()
+        # Exact id first — a full id that also happens to be the prefix of a
+        # longer id must resolve to itself, not report "ambiguous". Only when
+        # there's no exact hit do we treat the argument as a prefix, and then
+        # LIKE wildcards are escaped so a stray _ or % in the argument matches
+        # literally instead of silently fanning out to unrelated nodes.
+        rows = v.conn.execute(_cols + "WHERE id = ? LIMIT 1", (want,)).fetchall()
+        if not rows:
+            esc = want.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            rows = v.conn.execute(
+                _cols + "WHERE id LIKE ? || '%' ESCAPE '\\' LIMIT 3",
+                (esc,)).fetchall()
         if not rows:
             out.append(f"── [{want}] not found.")
             continue
@@ -587,10 +690,39 @@ def _error(id_, code, message):
 
 
 def handle(req: dict) -> dict | None:
-    """Handle one JSON-RPC request. Returns a response dict, or None for
-    notifications (which get no reply)."""
+    """Handle one JSON-RPC message. Returns a response dict, or None for
+    notifications (a message with no "id" — these get NO reply, ever).
+
+    Validates the envelope shape before touching it: a malformed message
+    (not an object, no string method, wrong-typed params) earns a proper
+    JSON-RPC error, never an unhandled exception that would kill serve()."""
+    if not isinstance(req, dict):
+        return _error(None, -32600,
+                      "invalid request: expected a JSON-RPC object.")
+    # An id, when present, must be a string, number, or null — not a container.
+    if "id" in req and req["id"] is not None and not isinstance(req["id"], (str, int, float)):
+        return _error(None, -32600,
+                      "invalid request: 'id' must be a string, number, or null.")
     method = req.get("method")
-    id_    = req.get("id")
+    if not isinstance(method, str):
+        rid = req.get("id") if req.get("id") is not None else None
+        return _error(rid, -32600, "invalid request: 'method' must be a string.")
+    # A JSON-RPC notification has NO "id" member. It must never get a reply,
+    # whatever its method — so decide this up front.
+    is_notification = "id" not in req
+    id_ = req.get("id")
+
+    if is_notification:
+        # We take no side effects on any notification today (initialized, etc.);
+        # the contract that matters is the silence — a notification NEVER gets a
+        # reply, malformed params included.
+        return None
+
+    # Requests only: distinguish an OMITTED optional params (fine — default to
+    # {}) from one that is PRESENT but the wrong type (reject; never silently
+    # run a different, defaulted request than the caller wrote).
+    if "params" in req and req["params"] is not None and not isinstance(req["params"], dict):
+        return _error(id_, -32602, "invalid params: 'params' must be an object.")
     params = req.get("params") or {}
 
     if method == "initialize":
@@ -603,39 +735,67 @@ def handle(req: dict) -> dict | None:
             "serverInfo": SERVER_INFO,
         })
 
-    if method == "notifications/initialized":
-        return None  # notification, no reply
-
     if method == "tools/list":
         return _result(id_, {"tools": TOOLS})
 
     if method == "tools/call":
         name = params.get("name")
+        if not isinstance(name, str):
+            return _error(id_, -32602,
+                          "invalid params: 'name' must be a string.")
+        # Same present-but-wrong-typed rejection for arguments: an omitted or
+        # null arguments defaults to {}, but a present non-object is refused
+        # rather than silently run as a defaulted call.
+        if "arguments" in params and params["arguments"] is not None \
+                and not isinstance(params["arguments"], dict):
+            return _error(id_, -32602,
+                          "invalid params: 'arguments' must be an object.")
         args = params.get("arguments") or {}
         fn = TOOL_FNS.get(name)
         if not fn:
-            return _error(id_, -32601, f"unknown tool: {name}")
+            # the method (tools/call) exists; it's the tool name that's bad
+            return _error(id_, -32602, f"unknown tool: {name}")
         try:
             text = fn(args)
+            # A validation/authority rejection returns a typed _ErrText — a
+            # failure the client should see flagged, without substring-sniffing
+            # (a genuine result may quote the words "cairn error").
+            is_error = isinstance(text, _ErrText)
         except Exception as e:
+            # Keep a readable message for the agent (it reads it and self-
+            # corrects), but log the full detail to stderr instead of leaking
+            # internals to the client, and flag it so stricter clients can tell
+            # this was a failure, not a result.
+            import traceback
+            print(f"cairn mcp: tool {name} failed: {e}\n"
+                  f"{traceback.format_exc()}", file=sys.stderr, flush=True)
             text = f"cairn error: {e}"
-        return _result(id_, {"content": [{"type": "text", "text": text}]})
+            is_error = True
+        return _result(id_, {"content": [{"type": "text", "text": text}],
+                             "isError": is_error})
 
     if method == "ping":
         return _result(id_, {})
 
-    if id_ is not None:
-        return _error(id_, -32601, f"method not found: {method}")
-    return None
+    return _error(id_, -32601, f"method not found: {method}")
 
 
 def serve() -> None:
     """Read JSON-RPC messages line-delimited from stdin, write replies to
-    stdout. Logs go to stderr only (stdout is the protocol channel)."""
+    stdout. Logs go to stderr only (stdout is the protocol channel).
+
+    Each message is isolated: a malformed line or an unexpected error yields a
+    JSON-RPC error (or is logged) and the loop keeps serving — one bad message
+    can never take the whole connection down."""
     # this process IS the harness when nothing else declared one — self-stamp
     # so captures born under the MCP server read 'mcp' rather than 'unknown'.
     os.environ.setdefault("CAIRN_HARNESS", "mcp")
     print("cairn mcp server ready (stdio)", file=sys.stderr, flush=True)
+
+    def _emit(resp):
+        sys.stdout.write(json.dumps(resp) + "\n")
+        sys.stdout.flush()
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -643,11 +803,21 @@ def serve() -> None:
         try:
             req = json.loads(line)
         except Exception:
+            # Malformed JSON: the spec answer is a Parse Error with a null id.
+            _emit(_error(None, -32700, "parse error: message was not valid JSON."))
             continue
-        resp = handle(req)
+        try:
+            resp = handle(req)
+        except Exception as e:
+            # Last-resort net: handle() shouldn't raise, but if it ever does,
+            # answer with an internal-error (never crash the loop) and log it.
+            import traceback
+            print(f"cairn mcp: handler error: {e}\n{traceback.format_exc()}",
+                  file=sys.stderr, flush=True)
+            rid = req.get("id") if isinstance(req, dict) else None
+            resp = _error(rid, -32603, "internal error.")
         if resp is not None:
-            sys.stdout.write(json.dumps(resp) + "\n")
-            sys.stdout.flush()
+            _emit(resp)
 
 
 if __name__ == "__main__":

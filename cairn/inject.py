@@ -115,34 +115,30 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def _fmt_node(r) -> str:
-    """Format one node as a box line."""
+    """Format one node as a single compact line (formatting-only compaction
+    2026-09-10; prior boxed renderer saved verbatim in _pre-thin-backup-2026-09-10).
+    Same label + text + session hint as before — only the │ frame, right-padding
+    and width-clip are dropped. Content is UN-clipped (the box used to trim text to
+    fit its width; we no longer do), so this never shows LESS than the old row."""
     kind = r["kind"] or "note"
     label = {
         "decision":      "DECISION",
-        "warning":       "WARNING ",
-        "open_item":     "OPEN    ",
+        "warning":       "WARNING",
+        "open_item":     "OPEN",
         "resolved":      "RESOLVED",
-        "context_stamp": "CONTEXT ",
-        "hypothesis":    "THEORY  ",
-        "blocker":       "BLOCKER ",
-        "insight":       "INSIGHT ",
-    }.get(kind, kind.upper()[:8].ljust(8))
+        "context_stamp": "CONTEXT",
+        "hypothesis":    "THEORY",
+        "blocker":       "BLOCKER",
+        "insight":       "INSIGHT",
+    }.get(kind, kind.upper()[:8])
 
-    text = (r["query"] or r["output_preview"] or "")[:90].replace("\n", " ")
+    text = (r["query"] or r["output_preview"] or "")[:90].replace("\n", " ").rstrip()
     sess = (r["session"] or "")
     # strip date prefix from session name for readability
-    # e.g. "cairn-upgrade-session-2026-06-09" → "cairn-upgrade"
+    # e.g. "cairn-upgrade-session-2026-06-09" -> "cairn-upgrade"
     sess_short = sess.rsplit("-20", 1)[0][:22] if "-20" in sess else sess[:22]
-
-    line = f"│ {label}  {text}"
-    # right-align session hint
-    suffix = f"  [{sess_short}]"
-    max_line = BOX_WIDTH - 1
-    if len(line) + len(suffix) <= max_line:
-        line = line + suffix
-    else:
-        line = line[:max_line - len(suffix)] + suffix
-    return line.ljust(BOX_WIDTH - 1) + "│"
+    tail = f"  [{sess_short}]" if sess_short else ""
+    return f"  {label}  {text}{tail}"
 
 
 def _fmt_gist(r) -> str:
@@ -150,6 +146,7 @@ def _fmt_gist(r) -> str:
     Format one node as a single gist line — the parafovea.
     ~12 tokens per line vs ~40 for a verbatim row. Fuzzy-trace theory:
     the gist is what survives; verbatim is on demand via `cairn read <id>`.
+    Compact (no │ frame / padding) as of the 2026-09-10 formatting compaction.
     """
     kind  = (r["kind"] or "note")[:8]
     gist  = ""
@@ -159,31 +156,33 @@ def _fmt_gist(r) -> str:
         pass
     if not gist:
         gist = (r["query"] or r["output_preview"] or "")[:80]
-    gist = gist.replace("\n", " ")
-    line = f"│ ·{kind}· {gist}"
-    max_line = BOX_WIDTH - 1
-    if len(line) > max_line:
-        line = line[:max_line]
-    return line.ljust(BOX_WIDTH - 1) + "│"
+    # Renderer-level bound (independent of upstream gist generation): the old boxed
+    # row was clipped to box width; keep an explicit cap here to prevent unbounded
+    # gist growth. 80 preserves every char the old ~72-col row could show. (A char
+    # cap is not a guaranteed byte/token reduction for every input — dense multi-byte
+    # content can still be larger because we intentionally show more chars than the
+    # old width-clip did — but it bounds the row.) Applies to populated + fallback.
+    gist = gist.replace("\n", " ").rstrip()[:80]
+    return f"  [{kind}] {gist}"
 
 
 def _box(title: str, rows: list, gist_rows: list | None = None) -> list[str]:
     """
-    Wrap node rows in a visual box. Foveal structure:
-      rows      — verbatim detail (the fovea, full attention)
-      gist_rows — one-line gists (the parafovea, 10x cheaper per fact)
+    Compact block. Foveal structure preserved (verbatim rows = fovea, gist rows =
+    parafovea); only the Unicode box frame, side bars, right-padding and separator
+    are gone. Those cost ~6 JSON-escaped bytes PER character on the
+    additionalContext wire (envelope is json.dumps(ensure_ascii=True)), so dropping
+    them roughly halves the emitted bytes with zero loss of row information — the
+    same rows, labels, session hints, gists and title still render.
+    Backup of the boxed renderer: _pre-thin-backup-2026-09-10/inject.py.orig.
     """
-    top    = f"┌─ CAIRN · {title} " + "─" * max(0, BOX_WIDTH - 12 - len(title)) + "┐"
-    bottom = "└" + "─" * (BOX_WIDTH - 2) + "┘"
-    lines  = [top]
+    lines = [f"CAIRN {title}"]
     for r in rows:
         lines.append(_fmt_node(r))
     if gist_rows:
-        sep = "│ " + "·" * (BOX_WIDTH - 4) + " │"
-        lines.append(sep)
+        lines.append("  --")
         for r in gist_rows:
             lines.append(_fmt_gist(r))
-    lines.append(bottom)
     return lines
 
 

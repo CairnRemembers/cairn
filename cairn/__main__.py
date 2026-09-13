@@ -2784,8 +2784,7 @@ def _consent_get() -> dict:
 def record_consent(harness: str, account: str, answer: str) -> None:
     """One-time-ness of the consent walk, keyed by HARNESS x ACCOUNT so two
     accounts of one harness never share (or bleed) a decision. Once answered
-    (yes OR no) for a harness+account, no agent raises it again (owner: 'i dont
-    want you to keep hounding the people'); re-deciding is the human's move
+    (yes OR no) for a harness+account, no agent raises it again (so the same person is not re-prompted); re-deciding is the human's move
     (`cairn setup`). A blank account falls back to a bare-harness key (back-compat)."""
     from datetime import datetime, timezone
     d = _consent_get()
@@ -3196,7 +3195,7 @@ def cmd_account(args: list[str]) -> None:
         # --apply mutates AFTER a fresh full backup of the sessions table. Locks
         # only proven/explicit rows (Desktop proof, canary-pinned receipts,
         # explicit --account imports); NEVER touches uncovered/ambiguous rows.
-        # Canary set is PINNED session ids (node 0b725ac8c082), not text search.
+        # Canary set is PINNED session ids, not text search.
         import re as _re
         from datetime import datetime, timezone
         from cairn.accounts import desktop_account
@@ -3354,6 +3353,10 @@ COMMANDS = {
 
 def main():
     args = sys.argv[1:]
+    if args and args[0] in ("--version", "-V", "version"):
+        from cairn import __version__
+        print(f"cairn-remembers {__version__}")
+        return
     if not args or args[0] not in COMMANDS:
         print("cairn — local-first episodic agent memory\n")
         print("commands:")

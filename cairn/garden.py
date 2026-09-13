@@ -453,7 +453,7 @@ def _is_process(tags, model: str = "") -> bool:
     A human-planted note is NEVER the machine's work — the Plant stamps
     'human-capture', and that trumps every machine word (the Plant also
     stamps 'garden' for provenance, which is in PROCESS_TAGS; without this
-    guard the register hid the owner's own planted notes — G2 finding)."""
+    guard the register hid the owner's own planted notes — a review finding)."""
     tags = tags or []
     if any(isinstance(t, str) and t == "human-capture" for t in tags):
         return False
@@ -537,7 +537,7 @@ def register_garden(app, vault, current_session_fn) -> None:
             return {"session": sess, "nodes": [_node_dict(r) for r in rows]}
         # default: a cross-session DATE view — everything captured that local
         # day, across all sessions. A human thinks in days, not sessions.
-        # ?days_ago=N travels back one day at a time (owner: travel-back),
+        # ?days_ago=N travels back one day at a time (travel-back),
         # keeping the one-day-one-job shape instead of an endless append.
         from datetime import datetime as _dt, timezone as _tz, timedelta as _td
         days_ago = max(0, min(int(days_ago or 0), 3650))
@@ -562,8 +562,7 @@ def register_garden(app, vault, current_session_fn) -> None:
         recency surface uses. Rows are click-through to the node deep-view, which
         works pre-embedding."""
         hidden = vault.hidden_ids()
-        # ?before=<iso> pages the tail older (owner: "the option to go back
-        # further") — same shape, cursor on timestamp.
+        # ?before=<iso> pages the tail older (to page further back) — same shape, cursor on timestamp.
         cur = " AND timestamp < ?" if before else ""
         params = (before[:40],) if before else ()
         rows = vault.conn.execute(
@@ -915,10 +914,197 @@ def register_garden(app, vault, current_session_fn) -> None:
             return JSONResponse({"error": f"write failed: {exc}"}, status_code=500)
         return {"greeting": text, "ok": True}
 
+    @app.post("/api/garden/toured")
+    async def garden_set_toured(request: Request):
+        """Mark the first-run walkthrough as seen — server-side in
+        ~/.cairn/settings.json so it is remembered across PORTS and browsers.
+        localStorage is per-origin, so the tour used to re-appear on every new
+        port (7331 vs a --port= instance). The header '?' still replays it.
+        Config only, never the append-only vault; same guard as the greeting setter."""
+        if not _rate_ok(request):
+            return JSONResponse({"error": "rate limited"}, status_code=429)
+        sf = Path.home() / ".cairn" / "settings.json"
+        try:
+            data = {}
+            if sf.exists():
+                # A missing file may initialize, but an EXISTING file that is
+                # unreadable / malformed / not an object must NOT be overwritten —
+                # that would silently drop the owner's other settings keys. Error
+                # out and write nothing in that case.
+                try:
+                    data = json.loads(sf.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    return JSONResponse({"error": f"settings unreadable: {exc}"},
+                                        status_code=500)
+                if not isinstance(data, dict):
+                    return JSONResponse({"error": "settings not an object"},
+                                        status_code=500)
+            data["toured"] = True
+            sf.parent.mkdir(parents=True, exist_ok=True)
+            # Atomic: write a temp sibling then replace, so a partial/failed write
+            # can never truncate the shared settings file.
+            tmp = sf.with_name(sf.name + ".tmp")
+            tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False),
+                           encoding="utf-8")
+            tmp.replace(sf)
+        except Exception as exc:
+            return JSONResponse({"error": f"write failed: {exc}"}, status_code=500)
+        return {"ok": True}
+
+    def _idx_ns(tag):
+        if tag.startswith("entity:"):
+            return "entity"
+        if tag.startswith("proj:"):
+            return "proj"
+        return "topic"
+
+    def _write_index_pref(section: str, field: str, value):
+        """Set/clear one entry in a nested settings.json dict (index_overrides /
+        index_aliases). Held under a CROSS-PROCESS lock so concurrent dashboards can't
+        lose each other's choices (atomic replace protects the file swap, not the whole
+        read-modify-write). An existing non-object settings file OR non-object section is
+        refused rather than clobbered; a failed write leaves the previous file intact.
+        Config only — never the append-only vault, never a node's memberships. field is a
+        FULL raw tag kept verbatim (no normalization); value=None removes the entry.
+        Stored in its OWN vault-scoped file (index_prefs.json) so it never contends with
+        settings.json's greeting/toured writers. For 'aliases', a write that would create
+        a merge cycle is refused."""
+        import os, time
+        from cairn.book import _index_prefs_path
+        sf = _index_prefs_path(vault)   # co-located with THIS vault's cairn.db
+        sf.parent.mkdir(parents=True, exist_ok=True)
+        lock_fp = None
+        locked = False
+        try:
+            lock_fp = open(sf.with_name(sf.name + ".lock"), "a+")
+            try:
+                import msvcrt
+                for _ in range(60):
+                    try:
+                        msvcrt.locking(lock_fp.fileno(), msvcrt.LK_NBLCK, 1)
+                        locked = True
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                if not locked:
+                    return JSONResponse({"error": "settings busy — try again"}, status_code=503)
+            except ImportError:
+                try:
+                    import fcntl
+                    fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX)
+                    locked = True
+                except Exception:
+                    locked = False   # best effort on platforms with neither
+            data = {}
+            if sf.exists():
+                try:
+                    data = json.loads(sf.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    return JSONResponse({"error": f"settings unreadable: {exc}"}, status_code=500)
+                if not isinstance(data, dict):
+                    return JSONResponse({"error": "settings not an object"}, status_code=500)
+            sub = data.get(section)
+            if sub is None:
+                sub = {}
+            elif not isinstance(sub, dict):
+                return JSONResponse({"error": f"settings.{section} is not an object"}, status_code=500)
+            if value is None:
+                sub.pop(field, None)
+            else:
+                sub[field] = value
+                if section == "aliases":
+                    # refuse a write that would create a merge cycle (A->B->…->A)
+                    def _cyclic(m):
+                        for start in m:
+                            seen, cur = set(), start
+                            while cur in m:
+                                if cur in seen:
+                                    return True
+                                seen.add(cur)
+                                cur = m[cur]
+                        return False
+                    if _cyclic(sub):
+                        return JSONResponse({"error": "that merge would create a loop"}, status_code=400)
+            if sub:
+                data[section] = sub
+            else:
+                data.pop(section, None)
+            tmp = sf.with_name(sf.name + f".{os.getpid()}.{time.time_ns()}.tmp")
+            try:
+                tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(sf)
+            except Exception as exc:
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+                return JSONResponse({"error": f"write failed: {exc}"}, status_code=500)
+        except Exception as exc:
+            return JSONResponse({"error": f"write failed: {exc}"}, status_code=500)
+        finally:
+            if lock_fp is not None:
+                if locked:
+                    try:
+                        import msvcrt
+                        msvcrt.locking(lock_fp.fileno(), msvcrt.LK_UNLCK, 1)
+                    except Exception:
+                        try:
+                            import fcntl
+                            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
+                        except Exception:
+                            pass
+                try:
+                    lock_fp.close()
+                except Exception:
+                    pass
+        return {"ok": True}
+
+    @app.post("/api/garden/index/place")
+    async def garden_index_place(payload: dict, request: Request):
+        """Owner Index placement — keep a tag in the A–Z, move it to the system drawer,
+        or reset to the default classifier. Writes index_overrides[tag]. DISPLAY only:
+        the tag's memories, search, and AI retrieval are untouched; fully reversible."""
+        if not _rate_ok(request):
+            return JSONResponse({"error": "rate limited"}, status_code=429)
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "bad payload"}, status_code=400)
+        tag = payload.get("tag")
+        action = str(payload.get("action") or "").strip().lower()
+        if not isinstance(tag, str) or not tag:
+            return JSONResponse({"error": "tag (non-empty string) required"}, status_code=400)
+        if action not in ("keep", "move", "reset"):
+            return JSONResponse({"error": "action must be keep|move|reset"}, status_code=400)
+        return _write_index_pref("overrides", tag, None if action == "reset" else action)
+
+    @app.post("/api/garden/index/alias")
+    async def garden_index_alias(payload: dict, request: Request):
+        """Owner 'same as' merge — index_aliases[source]=canonical (both FULL raw tags,
+        SAME namespace), or remove it. Folds the source into the canonical's Index entry
+        for display only; every original tag stays its own clickable link and its memories
+        are untouched."""
+        if not _rate_ok(request):
+            return JSONResponse({"error": "rate limited"}, status_code=429)
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "bad payload"}, status_code=400)
+        source = payload.get("tag")
+        canonical = payload.get("same_as")
+        remove = bool(payload.get("remove"))
+        if not isinstance(source, str) or not source:
+            return JSONResponse({"error": "tag (non-empty string) required"}, status_code=400)
+        if remove:
+            return _write_index_pref("aliases", source, None)
+        if not isinstance(canonical, str) or not canonical:
+            return JSONResponse({"error": "same_as (non-empty string) required"}, status_code=400)
+        if source == canonical:
+            return JSONResponse({"error": "cannot merge a tag into itself"}, status_code=400)
+        if _idx_ns(source) != _idx_ns(canonical):
+            return JSONResponse({"error": "can only merge within the same kind (topic / name / project)"}, status_code=400)
+        return _write_index_pref("aliases", source, canonical)
+
     @app.post("/api/garden/file-under")
     async def garden_file_under(payload: dict, request: Request):
         """File an emerging family under an EXISTING declared project — the
-        alias write. G2 finding: 'Promote' was the only door, but some
+        alias write. A review finding: 'Promote' was the only door, but some
         emergents BELONG to a project already (the trademark research was
         Cairn work wearing its own tag). Appends the tag to the project's
         alias list in projects.json; the family folds into that project on
@@ -1392,7 +1578,7 @@ def register_garden(app, vault, current_session_fn) -> None:
             f"WHERE status='active' AND ({clause})", params).fetchone()
         stats = {"total": st[0], "first_ts": st[1] or "", "last_ts": st[2] or "",
                  "sessions": st[3]}
-        # DROPS v1 (owner asked three times): the Exchange folder is the ingest
+        # DROPS v1 (repeatedly requested): the Exchange folder is the ingest
         # surface — files dropped into Exchange\<tag>\ list on the project page,
         # live from disk (no auto-written nodes; note-taking stays human/agent
         # deliberate). Karpathy raw/ + GBrain source-registration, Cairn idiom.
@@ -1432,7 +1618,7 @@ def register_garden(app, vault, current_session_fn) -> None:
         sorted by due date (if a 'due:YYYY-MM-DD' tag exists), then
         importance, then age. The to-do list that wrote itself.
         """
-        # LIVE gate (owner ruling 2026-07-03): imported/backfilled history is
+        # LIVE gate (design ruling): imported/backfilled history is
         # reference, not chores — it never surfaces as Desk work. Display-only:
         # those nodes stay fully active for the AI's recall.
         _LIVE = ("AND session NOT LIKE 'import-%' "
@@ -2041,12 +2227,27 @@ def register_garden(app, vault, current_session_fn) -> None:
 
     @app.get("/api/garden/hub/{tag}")
     def garden_hub(tag: str):
-        rows = vault.conn.execute("""
-            SELECT * FROM nodes
-            WHERE status='active' AND tags LIKE ? ESCAPE '\\'
-            ORDER BY importance DESC, timestamp DESC LIMIT 60
-        """, (f'%"{_like(tag)}"%',)).fetchall()
-        return {"tag": tag, "nodes": [_node_dict(r) for r in rows]}
+        # EXACT tag membership (owner's call: a click shows THAT tag's nodes).
+        # The old JSON-substring LIKE conflated Foo/foo (ASCII case-insensitive)
+        # and missed tags whose JSON is escaped (quotes, backslashes, Unicode);
+        # json_each compares the parsed array element byte-for-byte, so case,
+        # punctuation and escaping are honoured, literal _/% don't act as
+        # wildcards, and EXISTS returns each node once even if it repeats the
+        # tag. json_valid guards a malformed/non-array tags column.
+        # json_valid guards a malformed tags column; json_type='array' ensures we
+        # only iterate genuine arrays (a scalar/object tags value would otherwise
+        # still yield a member through json_each). Same predicate for count + rows.
+        _MEMBER = ("status='active' AND json_valid(tags) AND json_type(tags)='array' "
+                   "AND EXISTS (SELECT 1 FROM json_each(nodes.tags) "
+                   "WHERE json_each.value = ?)")
+        total = vault.conn.execute(
+            f"SELECT COUNT(*) FROM nodes WHERE {_MEMBER}", (tag,)).fetchone()[0]
+        rows = vault.conn.execute(
+            f"SELECT * FROM nodes WHERE {_MEMBER} "
+            f"ORDER BY importance DESC, timestamp DESC LIMIT 60", (tag,)).fetchall()
+        # honest paging: total membership vs the (<=60) rows actually returned
+        return {"tag": tag, "total": total, "shown": len(rows),
+                "nodes": [_node_dict(r) for r in rows]}
 
     @app.get("/api/garden/search")
     def garden_search(q: str):
@@ -2113,6 +2314,10 @@ def register_garden(app, vault, current_session_fn) -> None:
                     "score": round(float(r.get("score", 0)), 4),
                     "hops":  r.get("hops", 0),
                     "source": r.get("source", ""),
+                    # carry status + relation so the UI can LABEL a retired
+                    # (voided) connection as history rather than drop or trust it
+                    "status": r.get("status", "active"),
+                    "relation": r.get("relation") or "",
                 })
             return {
                 "query":   pack.get("query", q),
@@ -2160,6 +2365,9 @@ def register_garden(app, vault, current_session_fn) -> None:
                 _s = _gj.loads(_sf.read_text(encoding="utf-8"))
                 if isinstance(_s, dict) and str(_s.get("greeting") or "").strip():
                     data["greeting"] = str(_s["greeting"]).strip()[:200]
+                # first-run walkthrough seen? (server-side so it survives across ports)
+                if isinstance(_s, dict) and _s.get("toured"):
+                    data["toured"] = True
         except Exception:
             pass
         # "Since your last visit" — a small, high-signal delta. Two markers in
@@ -2351,8 +2559,8 @@ def register_garden(app, vault, current_session_fn) -> None:
         # ── Hub Topics strip (P3.5 both-stacked, part 2) ───────────────────
         # Named community clusters under the projects strip — freshest life
         # first, capped. Kept an INDEPENDENT block so flipping the stack order
-        # (or dropping one) at G2 is a template move, not a rebuild (ruling
-        # 079cbf03d2f3). The REGISTER reaches topics here: a cluster whose
+        # (or dropping one) at G2 is a template move, not a rebuild. The
+        # REGISTER reaches topics here: a cluster whose
         # recent meaning-members are mostly the machine's own work-notes is
         # marked process (display-only, same toggle — the community column and
         # retrieval are untouched). book.py stays a leaf — annotate here.
@@ -2361,7 +2569,7 @@ def register_garden(app, vault, current_session_fn) -> None:
             # hub-strip hygiene (same rule as emerging projects above): a
             # cluster needs real meaning-mass (>=3 notes) to earn Hub space.
             # The Index/Knowledge shelf still shows every named topic —
-            # topics_total lets the strip SAY it's a slice (G2 finding: the
+            # topics_total lets the strip SAY it's a slice (a review finding: the
             # hub and the Library must not look like two different truths).
             _all_topics = topics_data(vault)
             tps = sorted((t for t in _all_topics if t["count"] >= 3),
@@ -2819,17 +3027,16 @@ GARDEN_HTML = r"""<!DOCTYPE html>
   .hbtn:hover { color: var(--ink); border-color: var(--muted); }
 
   /* ── capture ── */
-  /* ── the Plant bar, built from the owner's element sheet (Plant Bar
-     Elements, 2026-07-03): swatches by hex, cut-corner octagon frames
+  /* ── the Plant bar, built from the element sheet (Plant Bar
+     Elements): swatches by hex, cut-corner octagon frames
      matching the brain/garden buttons. --octo is the shared cut. ──── */
   :root {
     --pb-ivory: #E8E2D6; --pb-gray: #7F8878; --pb-mint: #8FBFAF;
     --pb-brass: #C79A43; --pb-green: #5D7D5A; --pb-red: #8C4A3D;
     --pb-black: #12110E;
   }
-  /* THE OWNER'S ART IS THE UI (his call: 'chop and use elements of image 4
-     and lay text boxes or dropdowns or buttons on top'). Every frame below
-     is a real slice of his element sheet via border-image — corners pinned
+  /* THE ART IS THE UI (built from the supplied element sheet). Every frame below
+     is a real slice of that element sheet via border-image — corners pinned
      pixel-true, only the straight runs stretch, texture fully his. */
   #capture-bar {
     position: relative; display: flex; gap: 8px; align-items: center;
@@ -2874,12 +3081,12 @@ GARDEN_HTML = r"""<!DOCTYPE html>
     color: var(--pb-ivory); font-size: 12.5px; border-radius: 2px; border: 1px solid transparent;
   }
   /* item states in plain paint — squishing the baked row art left side-border
-     artifacts (owner: 'the drop down window needs work still') */
+     artifacts (dropdown still needs polish) */
   .kind-item:hover { background: rgba(232,226,214,0.08); }
   .kind-item.sel { border: none; background: rgba(127,136,120,0.18);
     box-shadow: inset 2px 0 0 var(--pb-mint); }
 
-  /* ── DAWN: the owner's light-theme element sheet — same components,
+  /* ── DAWN: the light-theme element sheet — same components,
      paper-native fills, swapped per theme so the bar is never a dark
      slab on the light page (his call after seeing dusk art on dawn). */
   body:not([data-theme='dusk']) #capture-bar {
@@ -2918,14 +3125,13 @@ GARDEN_HTML = r"""<!DOCTYPE html>
   }
   #photo-btn:hover, #due-btn:hover { border-image-source: url('/assets/pb/util-hover.png'); }
   #photo-btn:active, #due-btn:active { border-image-source: url('/assets/pb/util-active.png'); }
-  /* Plant wears the DAWN sheet's filled-green art on BOTH themes (owner:
-     'make dusk plant button match the dawn' — the dark sheet's fill came
-     out muddy; the dawn one reads like his original mock everywhere). */
+  /* Plant wears the DAWN sheet's filled-green art on BOTH themes (dusk plant button matches the dawn — the dark sheet's
+     fill came out muddy; the dawn one reads like the original mock everywhere). */
   /* Plant: the DAWN sheet's star-pointed button on BOTH themes. Drawn as a
      whole un-stretched image — border-image was smearing the pointed tips
      into a rounded blob (they live in the stretch zones); a fixed-size
      button needs no nine-slice, just the art at its own aspect. */
-  /* Plant: the owner's STAR BUTTON ELEMENTS card (2026-07-03) — the pointed
+  /* Plant: the STAR BUTTON ELEMENTS design — the pointed
      banner badge, blank fills, one per theme colorway. Whole un-stretched
      image at natural aspect; label is real DOM text on top. */
   #capture-go {
@@ -2939,7 +3145,7 @@ GARDEN_HTML = r"""<!DOCTYPE html>
   #capture-go:disabled { filter: grayscale(0.6) opacity(0.6); }
   body:not([data-theme='dusk']) #capture-go {
     background-image: url('/assets/pb/star2-dawn.png'); color: #24301f; }
-  /* dual-ink glyphs — the owner's art recolored as FILES, not filters:
+  /* dual-ink glyphs — the art recolored as FILES, not filters:
      bright set on dusk, dark-umber set on dawn. One img each, CSS picks. */
   .gi { width: 16px; height: 16px; object-fit: contain; }
   .gi-dawn { display: none; }
@@ -2959,7 +3165,7 @@ GARDEN_HTML = r"""<!DOCTYPE html>
     position: relative;
   }
   /* tabs center over the 760px hub column (which is left-aligned inside main),
-     NOT the full page — owner: 'center to the boxes under it' (2026-07-04). */
+     NOT the full page — centered to the boxes under it. */
   .way-tabs { display: flex; justify-content: center; gap: 26px; max-width: 760px; }
   nav button {
     background: none; border: none; color: var(--muted);
@@ -3044,7 +3250,7 @@ GARDEN_HTML = r"""<!DOCTYPE html>
   .hero-stone-corner { position: absolute; top: 14px; right: -50px; margin: 0; z-index: 3; }
   .hub-hello { font-family: 'VT323', monospace; font-size: 44px; line-height: 1.05; color: var(--ink); margin: 8px 0 20px; font-weight: 400; }
   /* click-to-edit greeting: invisible at rest. No underline, no button — the
-     only hover cue is a text caret (owner: the dotted underline was too loud).
+     only hover cue is a text caret (the dotted underline was too loud).
      Click opens the edit; a small transient hint shows only WHILE editing. */
   .hub-hello:hover { cursor: text; }
   .hub-hello.editing { outline: none; cursor: text; text-decoration: none; }
@@ -3220,6 +3426,42 @@ GARDEN_HTML = r"""<!DOCTYPE html>
 
   /* ── hubs ── */
   .tag-cloud { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
+  /* book-style Index list (a list with buttons, not stacked):
+     entries flow down responsive columns, one per line, name … count, clickable. */
+  .idx-cols { column-width: 240px; column-gap: 32px; margin-bottom: 22px; }
+  .idx-line { break-inside: avoid; display: flex; align-items: baseline; gap: 7px;
+    padding: 3px 2px; cursor: pointer; color: var(--ink); font-size: 13.5px;
+    line-height: 1.5; }
+  .idx-line:hover { color: var(--moss); }
+  .idx-line:hover .idx-dots { border-bottom-color: var(--moss); }
+  .idx-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+  .idx-dots { flex: 1 1 auto; min-width: 14px; border-bottom: 1px dotted var(--line);
+    position: relative; top: -3px; }
+  .idx-n { color: var(--muted); font-size: 11px; flex: 0 0 auto; }
+  .idx-group { break-inside: avoid; }
+  .idx-group > summary { list-style: none; }
+  .idx-group > summary::-webkit-details-marker { display: none; }
+  .idx-sp { font-size: 11px; color: var(--muted); margin-left: 8px; cursor: pointer; white-space: nowrap; }
+  .idx-group[open] .idx-sp::after { content: ' \25be'; }
+  .idx-splist { display: flex; flex-direction: column; gap: 2px; margin: 1px 0 6px 16px;
+    padding-left: 8px; border-left: 1px solid var(--line); }
+  .idx-spitem { cursor: pointer; font-size: 12.5px; color: var(--muted); padding: 1px 0; }
+  .idx-spitem:hover { color: var(--moss); }
+  .pj.nm { color: var(--moss); opacity: .9; }
+  .tag-pill-group { display: inline-block; vertical-align: top; }
+  .tag-pill-group > summary { list-style: none; }
+  .tag-pill-group > summary::-webkit-details-marker { display: none; }
+  .tag-pill-spellings { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px 10px;
+    padding-left: 8px; border-left: 1px solid var(--line); }
+  .idx-acts { display: inline-flex; gap: 6px; margin-left: 10px; }
+  .idx-act { font-size: 10.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px;
+    padding: 0 6px; cursor: pointer; white-space: nowrap; line-height: 1.7; }
+  .idx-act:hover { color: var(--moss); border-color: var(--moss); }
+  .idx-act-src { color: var(--moss); border: 1px dashed var(--moss); }
+  .idx-org-banner { background: var(--card); border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px 12px; margin: 4px 0 12px; font-size: 13px; }
+  .idx-saved { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 12.5px; }
+  .idx-saved > code { font-size: 12px; background: var(--line); padding: 0 5px; border-radius: 3px; }
   .tag-pill {
     background: var(--card); border: 1px solid var(--line); color: var(--ink);
     border-radius: 999px; padding: 6px 16px; cursor: pointer; font-size: 13px;
@@ -3254,7 +3496,7 @@ GARDEN_HTML = r"""<!DOCTYPE html>
     color: var(--muted); margin: 22px 0 8px; font-weight: 700;
   }
   /* distressed tier divider — a single line torn from the plant-box element
-     sheet, the tier's name sitting on it (owner: separate the 3 project tiers) */
+     sheet, the tier's name sitting on it (the 3 project tiers separated) */
   .proj-sec {
     display: flex; align-items: center; justify-content: center; text-align: center; gap: 8px;
     margin: 30px 0 16px; min-height: 12px; padding: 1px 20px;
@@ -3335,9 +3577,9 @@ GARDEN_HTML = r"""<!DOCTYPE html>
   .promote-alias { font-size: 12.5px; color: var(--ink); display: inline-flex; align-items: center; gap: 4px; }
   .promote-btns { margin-top: 10px; display: flex; gap: 8px; }
 
-  /* the tour — rebuilt from the owner's element sheet: the MENU panel's
-     cut-corner sage frame, sized to its text (his call: the first card was
-     'wrong size for text and sloppy'). Same octagon language as the bar. */
+  /* the tour — rebuilt from the element sheet: the MENU panel's
+     cut-corner sage frame, sized to its text (the first card was the wrong size for its
+     text). Same octagon language as the bar. */
   #tour-scrim { position: fixed; inset: 0; z-index: 400; background: rgba(10,12,10,0.62); }
   #tour-card { position: fixed; left: 50%; bottom: 9vh; transform: translateX(-50%);
     width: fit-content; max-width: min(400px, calc(100vw - 40px));
@@ -3370,11 +3612,11 @@ GARDEN_HTML = r"""<!DOCTYPE html>
       0 calc(100% - var(--cut)), 0 var(--cut)); }
   .tour-next { border-color: var(--pb-mint, #8FBFAF) !important; color: var(--pb-mint, #8FBFAF) !important; font-weight: 700; }
   /* glow = outline ONLY — painting a background here made a wrong-colored
-     box on the owner's real vault theme (his 'weird blue box' catch) */
+     box under some vault themes */
   .tour-glow { position: relative; z-index: 401; outline: 2px solid var(--pb-mint, #8FBFAF);
     outline-offset: 4px; border-radius: 10px; }
-  /* blends in until the tour is actually running (owner: 'shouldnt be lit
-     up unless its on tour') */
+  /* blends in until the tour is actually running (not lit unless the tour is
+     on) */
   #tour-btn { border: 1px solid transparent; border-radius: 2px;
     color: var(--muted); font-weight: 700; min-width: 30px; }
   #tour-btn:hover { border-color: rgba(127,136,120,0.5); color: var(--ink); }
@@ -3540,8 +3782,8 @@ GARDEN_HTML = r"""<!DOCTYPE html>
 </div>
 
 <!-- One navigation, the human one: the Hub is the hall, every room links back
-     through it. ⌂ home · where-you-are label · search. (Owner ruling 562e4e710584:
-     the six-tab bar duplicated the Hub's router cards — it's gone.) -->
+     through it. ⌂ home · where-you-are label · search. (The six-tab bar
+     duplicated the Hub's router cards — it's gone.) -->
 <nav id="wayline">
   <div class="way-tabs">
     <button id="way-home" class="active" onclick="show('hub')">Hub</button>
@@ -3596,7 +3838,7 @@ const ICONS = new Set(['cairn-mark','idea','todo','question','note','done',
   'book','search','spark','drift','fresh','bank','parked','settings','due',
   'overdue','inbox','warning','findings','ripe','fog','speaker-you','photo',
   'seedling','budding','evergreen','dawn','dusk','skip',
-  // the owner's element-sheet glyphs (Plant Bar Elements, 2026-07-03)
+  // the element-sheet glyphs (Plant Bar Elements)
   'pb-idea','pb-todo','pb-question','pb-note','pb-camera','pb-calendar',
   'pb-due','pb-archive','pb-mark',
   // recolored inks: -dark set for dawn, -bright pair for the dusk chips
@@ -4003,7 +4245,7 @@ async function renderHub_() {
   const pa = d.project_activity || { families: [], untagged: 0 };
   // Hub shows a PREVIEW, not the field: top 3 by activity, one line for the
   // rest. The full list (and the emerging pile) lives in Projects where it
-  // belongs (owner ruling 562e4e710584 item 6 — "really messy on this home screen").
+  // belongs (moved off the home screen to reduce clutter).
   const fams = pa.families || [];
   // "notes", not "nodes": this strip counts TAGGED meaning-notes only.
   // Conversation turns / untagged captures aren't project-attributed until the
@@ -4082,8 +4324,17 @@ async function renderHub_() {
     </div>`;
   // collapsible welcome — default-open on first visit ever, then persisted however left
   try { const _ho = localStorage.getItem('cairn-heroOpen'); setHero(_ho === null ? true : _ho === '1'); } catch(e) {}
-  // first visit ever → the navigation walkthrough, once (the ? replays it)
-  try { if (!localStorage.getItem('cairn-toured') && tourAt < 0) tourStart(0); } catch(e) {}
+  // first visit ever → the navigation walkthrough, once (the ? replays it). The
+  // SERVER flag (d.toured) is the cross-port authority; localStorage is a per-origin
+  // fast-path. Three cases: server knows → mirror to local, no tour; server doesn't
+  // know but THIS origin toured locally (upgraded user, or an earlier POST failed) →
+  // MIGRATE it up (also the bounded retry) instead of re-showing on a new port;
+  // neither → genuinely first run, start the walk.
+  try {
+    if (d.toured) { try { localStorage.setItem('cairn-toured', '1'); } catch(e) {} }
+    else if (localStorage.getItem('cairn-toured')) { tourMarkSeen(); }
+    else if (tourAt < 0) { tourStart(0); }
+  } catch(e) {}
 }
 
 // hide/show the welcome hero; collapsed -> the stone medallion sits at the right of
@@ -4195,10 +4446,26 @@ function tourEnd() {
   tourAt = -1; tourGlowOff();
   document.body.classList.remove('touring');
   const s = document.getElementById('tour-scrim'); if (s) s.remove();
-  try { localStorage.setItem('cairn-toured', '1'); } catch (e) {}
+  tourMarkSeen();
 }
-// place the card NEXT TO what it describes (owner: 'put the pop up next to
-// the window') — below the glowed element when there's room, above when
+// Persist "walkthrough seen" — server-side (cross-port authority) with a local
+// fast-path. Idempotent, guards a duplicate in-flight POST, and handles both a
+// rejected fetch and a non-OK response WITHOUT clearing the local flag (so the
+// user is never re-pestered on this origin). A later Hub visit retries if the
+// server write hasn't landed — see the migration branch in renderHub.
+let _tourPersistInFlight = false;
+function tourMarkSeen() {
+  try { localStorage.setItem('cairn-toured', '1'); } catch (e) {}
+  if (_tourPersistInFlight) return;
+  _tourPersistInFlight = true;
+  try {
+    fetch('/api/garden/toured', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then(() => { _tourPersistInFlight = false; })
+      .catch(() => { _tourPersistInFlight = false; });
+  } catch (e) { _tourPersistInFlight = false; }
+}
+// place the card NEXT TO what it describes (placed next to
+// the target) — below the glowed element when there's room, above when
 // not, centered-low when the step has no target.
 function tourPlace(card, el) {
   // ALWAYS pin exactly one vertical anchor and release the other with
@@ -4401,56 +4668,154 @@ async function renderIndexPage() {
   $('main').innerHTML = '<div class="empty">turning to the index…</div>';
   const d = await fetch('/api/garden/bookindex').then(r => r.json());
   if (d.error) { $('main').innerHTML = `<div class="empty">index unavailable: ${esc(d.error)}</div>`; return; }
+  const overrides = d.index_overrides || {};   // {full_tag: 'keep'|'move'} — for reset controls
+  const aliases = d.index_aliases || {};        // {source_full_tag: canonical} — for unmerge controls
+  // "Your organization" panel — EVERY saved choice with a direct undo, so a choice is
+  // reversible from the UI even when its entry no longer renders (moved target, drawer, etc.).
+  // FULL raw tag shown (not label) so topic 'Foo', proj:Foo and entity:Foo — and any
+  // case/whitespace variants — stay distinguishable when resetting an exact identity.
+  const savedPanel = (indexOrganize && (Object.keys(overrides).length || Object.keys(aliases).length)) ? `
+    <div class="idx-org-banner"><b>Your organization</b> — ${Object.keys(overrides).length} placed · ${Object.keys(aliases).length} merged
+      ${Object.keys(overrides).map(tg => `<div class="idx-saved"><code>${esc(tg)}</code> <span class="hub-sub">${overrides[tg] === 'move' ? '→ drawer' : 'kept in A–Z'}</span> <span class="idx-act" onclick="idxPlace('${jesc(tg)}','reset')">reset</span></div>`).join('')}
+      ${Object.keys(aliases).map(src => `<div class="idx-saved"><code>${esc(src)}</code> <span class="hub-sub">= <code>${esc(aliases[src])}</code></span> <span class="idx-act" onclick="idxUnmerge('${jesc(src)}')">unmerge</span></div>`).join('')}
+    </div>` : '';
 
   // Real A-Z index: sort + group by the DISPLAYED name so entries land under
   // their true letter. A `proj:<name>` tag is a declared project — bucket it by
-  // <name> (owner: "demoapp belongs in D, not P") and move the 'proj' marker to
+  // <name> (a demo app belongs in Dormant, not Projects) and move the 'proj' marker to
   // the END so it's still flagged as a project but findable in A-Z. entity: is
   // stripped the same way (legacy). Click → EXACT tag membership (renderHub uses
   // the full, unmodified tag), not a fuzzy word search.
-  const labeled = (d.tags || []).map(t => {
+  // Topics always; entity NAMES only when the owner toggles them on (off by default
+  // — keeps the topic A-Z clean, names one click away). Each carries its group meta
+  // (variants + every original spelling) so a folded name shows one entry that expands
+  // to every raw tag, each its own link + count — never a silent merge.
+  const showNames = indexNames === 'on';
+  const src = (d.tags || []).slice();
+  if (showNames) for (const n of (d.names || [])) src.push(n);
+  const labeled = src.map(t => {
     const raw = t.tag || '';
     const isProj = raw.startsWith('proj:');
-    const name = isProj ? raw.slice(5) : raw.replace(/^entity:/, '');
-    return { tag: raw, count: t.count, name, isProj };
+    // DISPLAY label (prefix stripped) is separate from the FULL tag used for the click,
+    // so clicking a name searches its real stored membership (entity:Foo), not 'Foo'.
+    const label = t.label || (isProj ? raw.slice(5) : raw.replace(/^entity:/, ''));
+    return { tag: raw, label, count: t.count, isProj,
+             kind: t.kind || 'topic', variants: t.variants || 1, spellings: t.spellings || null };
   });
-  labeled.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  labeled.sort((a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase()));
   const groups = {};
   labeled.forEach(t => {
-    const c0 = (t.name[0] || '#').toUpperCase();
+    const c0 = (t.label[0] || '#').toUpperCase();
     const key = (c0 >= 'A' && c0 <= 'Z') ? c0 : '#';
     (groups[key] = groups[key] || []).push(t);
   });
   const letters = Object.keys(groups).sort();
   const jumpHTML = letters.map(L =>
     `<span class="az-jump" onclick="document.getElementById('az-${L}').scrollIntoView({behavior:'smooth',block:'start'})">${L}</span>`).join('');
-  const tagsHTML = letters.map(L =>
-    `<div class="az-h" id="az-${L}">${L}</div><div class="tag-cloud">` +
-    groups[L].map(t =>
-      `<span class="tag-pill" onclick="renderHub('${jesc(t.tag)}')">` +
-      `${esc(t.name)}${t.isProj ? '<span class="pj">proj</span>' : ''}` +
-      `<span class="n">${t.count}</span></span>`).join('') +
-    `</div>`).join('');
+  const mark = t => (t.isProj ? '<span class="pj">proj</span>'
+                   : (t.kind === 'name' ? '<span class="pj nm">name</span>' : ''));
+  // searchable haystack = every member label + full raw tag, so filtering a NON-canonical
+  // spelling still finds (and opens) the group even while it is collapsed.
+  const hay = t => esc([t.label, t.tag].concat(t.spellings ? t.spellings.flatMap(s => [s.label, s.tag]) : []).join(' ').toLowerCase());
+  // spelling disclosure — every original tag is its OWN clickable link + count (display
+  // uses the stripped label, click uses the full tag). The canonical is included, so its
+  // own direct link lives inside the group; the group header only expands.
+  const splist = t => (t.variants > 1 && t.spellings)
+    ? `<div class="idx-splist">${t.spellings.map(s =>
+        `<span class="idx-spitem" onclick="event.stopPropagation();renderHub('${jesc(s.tag)}')">${esc(s.label)} <span class="idx-n">${s.count}</span>${orgActions({ tag: s.tag, label: s.label }, false)}${(indexOrganize && aliases[s.tag]) ? `<span class="idx-act" onclick="event.preventDefault();event.stopPropagation();idxUnmerge('${jesc(s.tag)}')" title="un-merge this spelling back to its own entry">unmerge</span>` : ''}</span>`).join('')}</div>`
+    : '';
+  // Organize actions (shown only in organize mode): move an entry to the drawer, keep a
+  // drawer entry in the A-Z, or start a 'same as' merge. Two-click merge: arm on one
+  // entry, then 'merge here' on the entry it belongs with. Display-only + reversible.
+  const orgActions = (t, inDrawer) => {
+    if (!indexOrganize) return '';
+    const lbl = t.label || t.name || t.tag;
+    if (pendingMerge) {
+      return pendingMerge.tag === t.tag
+        ? `<span class="idx-act idx-act-src">merging…</span>`
+        : `<span class="idx-act" onclick="event.preventDefault();event.stopPropagation();idxMergeInto('${jesc(t.tag)}')" title="merge '${esc(pendingMerge.label)}' into '${esc(lbl)}'">merge here</span>`;
+    }
+    const place = inDrawer
+      ? `<span class="idx-act" onclick="event.preventDefault();event.stopPropagation();idxPlace('${jesc(t.tag)}','keep')" title="show this in the A-Z">↑ keep</span>`
+      : `<span class="idx-act" onclick="event.preventDefault();event.stopPropagation();idxPlace('${jesc(t.tag)}','move')" title="tuck this into the drawer">↓ drawer</span>`;
+    const merge = `<span class="idx-act" onclick="event.preventDefault();event.stopPropagation();idxMergeStart('${jesc(t.tag)}','${jesc(lbl)}')" title="mark this as the same as another entry">≈ same as</span>`;
+    const reset = overrides[t.tag] ? `<span class="idx-act" onclick="event.preventDefault();event.stopPropagation();idxPlace('${jesc(t.tag)}','reset')" title="reset to the default placement">reset</span>` : '';
+    return `<span class="idx-acts">${place}${merge}${reset}</span>`;
+  };
+  const tagsHTML = letters.map(L => {
+    const head = `<div class="az-h" id="az-${L}">${L}</div>`;
+    if (indexView === 'list') {
+      return head + `<div class="idx-cols">` + groups[L].map(t => {
+        if (t.variants > 1) {
+          // no canonical count in the count slot (that would read as a group total);
+          // just "N spellings" — each real count rides its own spelling link inside.
+          return `<details class="idx-group" data-hay="${hay(t)}"><summary class="idx-line">` +
+            `<span class="idx-name">${esc(t.label)}${mark(t)}</span>` +
+            `<span class="idx-sp">${t.variants} spellings${indexOrganize ? ' — organize each below' : ''}</span><span class="idx-dots"></span></summary>` +
+            splist(t) + `</details>`;
+        }
+        return `<div class="idx-line" data-hay="${hay(t)}" onclick="renderHub('${jesc(t.tag)}')">` +
+          `<span class="idx-name">${esc(t.label)}${mark(t)}</span>` +
+          `<span class="idx-dots"></span><span class="idx-n">${t.count}</span>${orgActions(t, false)}</div>`;
+      }).join('') + `</div>`;
+    }
+    return head + `<div class="tag-cloud">` + groups[L].map(t => {
+      if (t.variants > 1) {
+        // cloud groups get a real expandable disclosure (not just a tooltip) so every
+        // spelling is reachable; the count sits on each spelling, not the group header.
+        return `<details class="tag-pill-group" data-hay="${hay(t)}"><summary class="tag-pill">${esc(t.label)}${mark(t)}<span class="pj">${t.variants}sp</span></summary>` +
+          `<div class="tag-pill-spellings">${t.spellings.map(s =>
+            `<span class="tag-pill" onclick="renderHub('${jesc(s.tag)}')">${esc(s.label)}<span class="n">${s.count}</span></span>`).join('')}</div></details>`;
+      }
+      return `<span class="tag-pill" data-hay="${hay(t)}" onclick="renderHub('${jesc(t.tag)}')">${esc(t.label)}${mark(t)}<span class="n">${t.count}</span></span>`;
+    }).join('') + `</div>`;
+  }).join('');
 
-  // The Index is PURE lookup (owner: "the fastest large knowledge tags
-  // navigation" — and it got junked when browsing content moved in). A–Z only;
+  // System & session tags (plumbing / capture kinds / CAIRN-* session markers) are
+  // kept OUT of the topic A-Z (server: book._is_index_system_tag) but surfaced here
+  // behind a reversible drawer — still clickable, exact-tag membership, data untouched.
+  const sys = (d.system_tags || []).map(t => ({ tag: t.tag, count: t.count, name: (t.tag || '').replace(/^entity:/, '') }))
+    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  const sysHTML = sys.length ? `
+    <details class="proj-drawer" id="index-system-tags" style="margin-top:16px">
+      <summary class="az-h" style="cursor:pointer;border:none;margin:0">System &amp; session tags <span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400">— ${sys.length} plumbing / capture / session markers, kept out of the topic A–Z · still clickable</span></summary>
+      <div class="tag-cloud" style="margin-top:8px">${sys.map(t =>
+        `<span class="tag-pill" onclick="renderHub('${jesc(t.tag)}')">${esc(t.name)}<span class="n">${t.count}</span>${orgActions({ tag: t.tag, name: t.name }, true)}</span>`).join('')}</div>
+    </details>` : '';
+
+  // The Index is PURE lookup (fast large-tag
+  // navigation — it got junked when browsing content moved in). A–Z only;
   // Topics/Consolidated/Documents/Terms/Legend live on the Knowledge shelf.
   $('main').innerHTML = `
     <div class="book-wrap">
       ${libraryShelfBar('index')}
-      <div class="book-title">Index</div>
+      <div class="book-title">Index <span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400;font-size:13px">${(d.tags || []).length} topics${showNames ? ' · ' + (d.names || []).length + ' names' : ''}${sys.length ? ' · ' + sys.length + ' system/session tags below' : ''}</span>${indexOrganize ? '' : `<a style="cursor:pointer;color:var(--moss);font-size:12px;margin-left:12px;font-weight:400" title="toggle how the A–Z is laid out" onclick="toggleIndexView()">${indexView === 'list' ? 'as cloud' : 'as list'}</a>`}<a style="cursor:pointer;color:var(--moss);font-size:12px;margin-left:10px;font-weight:400" title="show or hide your named things (people, places, projects, brands) in the A-Z" onclick="toggleIndexNames()">${indexNames === 'on' ? 'hide names' : 'show names'}</a><a style="cursor:pointer;color:var(--moss);font-size:12px;margin-left:10px;font-weight:400" title="organize the index — move entries in/out of the drawer, or mark two as the same thing" onclick="toggleIndexOrganize()">${indexOrganize ? 'done' : 'organize'}</a></div>
       <input class="promote-in" placeholder="narrow the index… type to filter, stay right here"
         oninput="libFilter(this.value)" style="width:100%;margin:4px 0 10px">
+      ${pendingMerge ? `<div class="idx-org-banner">Merging <b>${esc(pendingMerge.label)}</b> — click <b>merge here</b> on the entry it is the same as. <a onclick="idxMergeCancel()" style="cursor:pointer;color:var(--moss);margin-left:8px">cancel</a></div>` : (indexOrganize ? `<div class="idx-org-banner" style="opacity:.85"><b>Organize:</b> ↓ drawer hides an entry · ↑ keep brings one back · ≈ same as merges two. Click <b>done</b> up top when finished.</div>` : '')}
+      ${savedPanel}
       ${labeled.length ? `<div class="az-bar">${jumpHTML}</div>${tagsHTML}` : '<div class="empty">No tags yet.</div>'}
+      ${sysHTML}
     </div>`;
 }
 
-// In-place Library filter (owner: "search just that… stay on the view").
+// In-place Library filter (search within the current view).
 // Pure show/hide — no navigation, no server call; clearing restores everything.
 function libFilter(q) {
   q = (q || '').trim().toLowerCase();
-  document.querySelectorAll('main .tag-pill, main .book-line').forEach(el => {
-    el.style.display = !q || el.textContent.toLowerCase().includes(q) ? '' : 'none';
+  const root = $('main'); if (!root) return;
+  // Grouped entries match against ALL member labels/raw tags (data-hay), and OPEN when
+  // hit so a matching non-canonical spelling is reachable even from a collapsed group.
+  root.querySelectorAll('.idx-group, .tag-pill-group').forEach(el => {
+    const h = (el.getAttribute('data-hay') || el.textContent).toLowerCase();
+    const hit = !q || h.includes(q);
+    el.style.display = hit ? '' : 'none';
+    el.open = !!q && hit;
+  });
+  // Ungrouped rows/pills (never the summaries/spellings inside a group).
+  root.querySelectorAll('.idx-cols > .idx-line, .tag-cloud > .tag-pill, .book-line').forEach(el => {
+    const h = (el.getAttribute('data-hay') || el.textContent).toLowerCase();
+    el.style.display = !q || h.includes(q) ? '' : 'none';
   });
 }
 
@@ -4558,6 +4923,50 @@ function toggleTopicSort() {
   topicSort = topicSort === 'az' ? 'size' : 'az';
   try { localStorage.setItem('cairn-topicsort', topicSort); } catch (e) {}
   renderKnowledge();
+}
+// Index A–Z layout: 'list' (book-style column list, DEFAULT — owner preference
+// 2026-09-10) ⇄ 'cloud' (packed pills). Stored choice wins; fresh users get list.
+let indexView = (() => { try { return localStorage.getItem('cairn-indexview') || 'list'; } catch (e) { return 'list'; } })();
+function toggleIndexView() {
+  indexView = indexView === 'cloud' ? 'list' : 'cloud';
+  try { localStorage.setItem('cairn-indexview', indexView); } catch (e) {}
+  renderIndexPage();
+}
+// Names in the Index A-Z: 'off' (default — topics only) <-> 'on' (interleave entity names).
+let indexNames = (() => { try { return localStorage.getItem('cairn-indexnames') || 'off'; } catch (e) { return 'off'; } })();
+function toggleIndexNames() {
+  indexNames = indexNames === 'off' ? 'on' : 'off';
+  try { localStorage.setItem('cairn-indexnames', indexNames); } catch (e) {}
+  renderIndexPage();
+}
+// Organize mode — owner places entries (keep/move) and merges (same as). A session mode,
+// not persisted; the CHOICES persist server-side in settings.json (index_overrides/aliases).
+let indexOrganize = false;
+let pendingMerge = null;
+function toggleIndexOrganize() {
+  indexOrganize = !indexOrganize;
+  // the per-entry controls live in the LIST layout, so organizing forces (and remembers) it.
+  if (indexOrganize) { indexView = 'list'; try { localStorage.setItem('cairn-indexview', 'list'); } catch (e) {} }
+  else pendingMerge = null;
+  renderIndexPage();
+}
+async function _idxPost(url, body) {
+  try {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    let j = {};
+    try { j = await r.json(); } catch (e) {}
+    if (!r.ok || j.error) { toast('save failed: ' + (j.error || ('HTTP ' + r.status))); return false; }
+    return true;
+  } catch (e) { toast('save failed — is the server running?'); return false; }
+}
+async function idxPlace(tag, action) { if (await _idxPost('/api/garden/index/place', { tag, action })) renderIndexPage(); }
+async function idxUnmerge(tag) { if (await _idxPost('/api/garden/index/alias', { tag, remove: true })) renderIndexPage(); }
+function idxMergeStart(tag, label) { pendingMerge = { tag, label }; renderIndexPage(); }
+function idxMergeCancel() { pendingMerge = null; renderIndexPage(); }
+async function idxMergeInto(tag) {
+  if (!pendingMerge || pendingMerge.tag === tag) { pendingMerge = null; renderIndexPage(); return; }
+  const ok = await _idxPost('/api/garden/index/alias', { tag: pendingMerge.tag, same_as: tag });
+  if (ok) { pendingMerge = null; renderIndexPage(); }   // on failure keep the pending pick so they can retry
 }
 
 // The wayline: ⌂ lights up at home; the label says where you are. One
@@ -4750,10 +5159,12 @@ async function doDrift() {
                onclick="openNode(null,'${jesc(n.id)}')">
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
               <span class="kind-chip">${esc((n.kind||'note').replace('_',' '))}</span>
+              ${(n.status && n.status !== 'active') ? `<span class="kind-chip" style="background:var(--terra);color:#fff" title="a past connection that may no longer hold — kept as history, not deleted">⟲ retired</span>` : ''}
               ${n.topic ? `<span style="color:var(--muted);font-size:11px">${esc(n.topic)}</span>` : ''}
               <span style="color:var(--muted);font-size:11px;margin-left:auto">hops ${n.hops} · ${n.score}</span>
             </div>
             <div style="font-family:Georgia,serif;font-size:14.5px;margin-top:3px">${esc(n.gist || n.source || '')}</div>
+            ${n.relation ? `<div style="color:var(--muted);font-size:11px;margin-top:2px">${esc(n.relation)}</div>` : ''}
           </div>`).join('')}
       </div>`;
   } catch(err) {
@@ -4901,7 +5312,7 @@ async function renderProjects() {
   // flippable to A–Z; the choice persists like the theme does.
   if (projSort === 'az')
     (d.projects || []).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  // owner's rule (2026-07-08): section order is Approved → Proposed → Emerging.
+  // design rule: section order is Approved → Proposed → Emerging.
   // Each group keeps the chosen order (recent or A–Z) within itself.
   const approved = (d.projects || []).filter(p => !p.emerging);
   const emerging = (d.projects || []).filter(p => p.emerging);
@@ -4943,6 +5354,7 @@ async function renderProjects() {
           onclick="propFileGo(event,'${jesc(r.slug)}')">🗂 file under</button>
       </div>
     </div>`).join('');
+  const _keep = _captureKeep();
   $('main').innerHTML = `
     <div class="breadcrumb" style="display:flex;gap:8px;align-items:center">
       <button class="backbtn" onclick="goBack()">← Back</button>
@@ -4991,8 +5403,16 @@ async function renderProjects() {
         </div>
         ${p.last_gist ? `<div class="lastline">latest: ${esc(p.last_gist)}</div>` : ''}
         ${tri ? `<div class="triage-strip">
-          ${(tri.members && tri.members.length > 1) ? `<div class="triage-mem">${tri.members.length} tags read as one topic: ${tri.members.map(x => `<span class="pbadge">${esc(x)}</span>`).join(' ')}</div>` : ''}
           <div class="triage-ev">why: ${esc(tri.reason)}</div>
+          <details class="why-here" id="why-${encodeURIComponent(String(tri.tag || p.tag))}" style="margin-top:4px">
+            <summary class="hub-sub" style="cursor:pointer;text-transform:none;letter-spacing:0;font-weight:400">More evidence</summary>
+            <div class="why-body" style="margin-top:4px;display:flex;flex-direction:column;gap:3px;font-size:12px">
+              ${(tri.members && tri.members.length > 1) ? `<div class="triage-mem">${tri.members.length} tags read as one topic: ${tri.members.map(x => `<span class="pbadge">${esc(x)}</span>`).join(' ')}</div>` : ''}
+              <div>${tri.gate ? `<span class="pbadge" title="the gate that decided this">${esc(tri.gate)}</span> ` : ''}${tri.disposition ? esc(tri.disposition) : ''}</div>
+              ${tri.band ? `<div class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400">${esc(tri.band)}</div>` : ''}
+              ${tri.section_label ? `<div class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400">Classified as: ${esc(tri.section_label)}</div>` : ''}
+            </div>
+          </details>
         </div>` : ''}
         ${!p.emerging ? (() => {
           const kids = nestKids.filter(k => k.parent === p.tag);
@@ -5085,7 +5505,7 @@ async function renderProjects() {
                || emerging.find(x => (t.members || []).includes(x.tag));
         return p ? pcard(p, t) : '';
       }).join('');
-      const hE = (sec.emerging || []).length ? `<div class="proj-sec" id="sec-emerging" style="margin-top:6px">Emerging Projects ${sub(scount.emerging + (scount.emerging === 1 ? ' candidate' : ' candidates') + ' with positive evidence — promote to declare')}</div>` : '';
+      const hE = (sec.emerging || []).length ? `<div class="proj-sec" id="sec-emerging" style="margin-top:6px">Projects ${sub(scount.emerging + (scount.emerging === 1 ? ' candidate' : ' candidates') + ' with positive evidence — promote to declare')}</div>` : '';
       const hT = `<div class="proj-sec" id="sec-triage">Triage ${sub((tri.visible_cards || 0) + ' shown · read-only — what the evidence decided, and what it could not')}</div>`;
       const triageBody = hT + odd + likelyDrawer
         + drawer('skills', 'Skills &amp; Frameworks', 'global skills and project-specific how-tos')
@@ -5099,7 +5519,7 @@ async function renderProjects() {
       const candN = scount.emerging || 0;
       const sortedN = Math.max(0, (tri.visible_cards || 0) - candN);
       const emergingShell = (candN || sortedN) ? `<details class="proj-drawer" id="emerging-shell">`
-        + `<summary class="proj-sec">Emerging <span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400">— ${candN} candidate${candN === 1 ? '' : 's'} · ${sortedN} sorted</span></summary>`
+        + `<summary class="proj-sec">Emerging <span class="hub-sub" style="text-transform:none;letter-spacing:0;font-weight:400">— ${candN} project candidate${candN === 1 ? '' : 's'} · ${sortedN} other topic${sortedN === 1 ? '' : 's'} grouped</span></summary>`
         + `<div style="padding:4px 0 2px">${hE + emCards + triageBody}</div>`
         + `</details>` : '';
       return hA + approved.map(p => pcard(p)).join('') + prop + emergingShell + empty;
@@ -5121,7 +5541,40 @@ async function renderProjects() {
         <div class="name">${esc(x.name)} <span class="who" style="margin-left:auto">hidden${x.dismissed_at ? ' ' + when(x.dismissed_at) : ''}</span></div>
         <div class="proj-actions"><button class="abtn" onclick="undismissProject(event,'${jesc(x.key)}')">restore to emerging</button></div>
       </div>`).join('')}</div>` : ''}`;
+  _restoreKeep(_keep);
 }
+
+// B (keep your place): capture/restore runs SYNCHRONOUSLY around the single DOM write
+// in renderProjects — never across an await — so a user who closes a drawer, scrolls, or
+// refocuses WHILE the fetch is in flight is not clobbered by a stale snapshot. Scoped to
+// #main: it can never reopen a drawer from another view or steal focus to the capture bar.
+function _captureKeep() {
+  const main = document.getElementById('main');
+  if (!main) return null;
+  const open = Array.from(main.querySelectorAll('details[id]')).filter(x => x.open).map(x => x.id);
+  const ae = document.activeElement;
+  let focus = null;
+  if (ae && main.contains(ae)) {
+    if (ae.id) focus = { kind: 'id', key: ae.id };
+    else if (ae.tagName === 'SUMMARY') { const d = ae.closest('details[id]'); if (d) focus = { kind: 'summary', key: d.id }; }
+  }
+  return { open, focus, sy: window.scrollY };
+}
+function _restoreKeep(k) {
+  if (!k) return;
+  const main = document.getElementById('main');
+  if (!main) return;
+  const sel = id => { try { return main.querySelector('#' + CSS.escape(id)); } catch (e) { return null; } };
+  k.open.forEach(id => { const el = sel(id); if (el && el.tagName === 'DETAILS') el.open = true; });
+  window.scrollTo(0, k.sy);
+  if (k.focus) {
+    let el = null;
+    if (k.focus.kind === 'id') el = sel(k.focus.key);
+    else if (k.focus.kind === 'summary') { const d = sel(k.focus.key); el = d ? d.querySelector(':scope > summary') : null; }
+    if (el && el.focus) { try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); } }
+  }
+}
+
 
 // Registry verdicts (Lane B): bless / pass / revive append to the ledger —
 // nothing is edited, nothing deleted. Bless also declares the project so
@@ -5544,7 +5997,7 @@ async function renderToday() {
   const dayLabel = todayDaysAgo === 0 ? 'Today'
     : todayDaysAgo === 1 ? 'Yesterday' : (d.day || todayDaysAgo + ' days ago');
 
-  // ONE JOB (owner ruling 562e4e710584): Today answers "what happened since I
+  // ONE JOB: Today answers "what happened since I
   // left" — the session-grouped stream IS the content. The just-landed strip
   // lived here too and duplicated the stream's newest rows; the Hub's
   // "since your last visit" already covers arrivals. Cut.
@@ -5570,7 +6023,7 @@ async function renderToday() {
       }
     } catch(e) { /* ledger unavailable — skip strip */ }
   }
-  // The digest box is gone (owner: Today was noisy) — due/fading live on the
+  // The digest box is gone (Today was too noisy) — due/fading live on the
   // Desk; the two counts worth keeping fold into the hint line below.
   const learned = meaning.filter(n => n.kind === 'decision' || n.kind === 'insight').length;
   const emerged = meaning.filter(n => n.kind === 'idea' || n.kind === 'question' || n.kind === 'hypothesis').length;
@@ -5712,12 +6165,30 @@ async function renderHubs() {
 }
 
 async function renderHub(tag) {
-  const d = await fetch('/api/garden/hub/' + encodeURIComponent(tag)).then(r => r.json());
-  $('main').innerHTML = `
-    <div class="breadcrumb"><a onclick="show('hubs')">hubs</a> / ${esc(tag)}</div>
-    <div class="hub-head">${esc(tag)}</div>
-    <div class="hint">${d.nodes.length} memories</div>
-    ${d.nodes.map(n => cardHTML(n)).join('')}`;
+  const head = `<div class="breadcrumb"><a onclick="show('hubs')">hubs</a> / ${esc(tag)}</div>
+    <div class="hub-head">${esc(tag)}</div>`;
+  let r, d;
+  try {
+    r = await fetch('/api/garden/hub/' + encodeURIComponent(tag));
+    d = await r.json();
+  } catch (e) { d = null; }
+  // A failed/invalid response must NOT masquerade as an empty tag — distinguish
+  // "couldn't load" (offer retry) from a genuine zero-membership result.
+  if (!r || !r.ok || !d || d.error || !Array.isArray(d.nodes)) {
+    $('main').innerHTML = head +
+      `<div class="empty">couldn't load this tag — <a onclick="renderHub('${jesc(tag)}')" style="cursor:pointer;color:var(--moss)">retry</a></div>`;
+    return;
+  }
+  const nodes = d.nodes;
+  const total = (typeof d.total === 'number') ? d.total : nodes.length;
+  const shown = (typeof d.shown === 'number') ? d.shown : nodes.length;
+  // honest count: say "showing 60 of 214" when the tag has more than one page
+  const countLine = total === 0
+    ? 'no memories under this exact tag'
+    : (total > shown ? `showing ${shown} of ${total} memories` : `${total} ${total === 1 ? 'memory' : 'memories'}`);
+  $('main').innerHTML = head +
+    `<div class="hint">${countLine}</div>
+    ${nodes.map(n => cardHTML(n)).join('')}`;
 }
 
 function renderSearch() {
@@ -5740,7 +6211,7 @@ async function doSearch() {
     : '<div class="empty">No memory of that — yet.</div>';
 }
 
-// ── State-preserving back (owner ruling fbf7f4350ea9) ───────────────────────
+// ── State-preserving back ──────────────────────────────────────────────────
 // Every drill-down snapshots the EXACT view it leaves — HTML, scroll position,
 // and view name — so Back restores your place without retraveling. The browser
 // back button is wired to the same stack via pushState/popstate.

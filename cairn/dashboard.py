@@ -2173,7 +2173,7 @@ function atlasStopPolling() {
 
 async function toggleAtlas() {
   const c = document.getElementById('atlas-canvas');
-  // The Galaxy is HOME, not a mode (owner ruling: "make galaxy always on" —
+  // The Galaxy is HOME, not a mode (always on —
   // the whole-vault legacy layouts it used to exit into are parked). When
   // already home, the button just re-fits the view. Scoped drill-downs
   // (picking a session) still exit on purpose via exitAtlas(true).

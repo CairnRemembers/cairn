@@ -86,7 +86,7 @@ PROC_VOCAB = frozenset({"uncommitted", "not-committed", "committed-not-pushed", 
                         "built", "suite-green", "complete", "review", "ground-truth",
                         "verification"})
 MODEL_IDS = frozenset({"opus", "opus-4-8", "sonnet", "haiku", "claude", "fable-5",
-                       "singu", "sol", "gpt"})
+                       "gpt"})
 
 # §6 / P1. registry.py's lifecycle: proposed|blessed|revived NOMINATE a project;
 # passed|archived do not. nest() files a row under a parent WITHOUT touching status, so a
@@ -108,7 +108,7 @@ def _tokens(x) -> list:
 
 
 def _core(x) -> list:
-    """tokens(x) minus trailing corporate suffixes — so wescott-co reduces to wescott."""
+    """tokens(x) minus trailing corporate suffixes — so acme-co reduces to acme."""
     t = _tokens(x)
     while t and t[-1] in SUFFIXES:
         t = t[:-1]
@@ -161,7 +161,7 @@ def _prefix_hint(tag: str):
 
 def _collision_home(tag: str):
     """§8.2 name collision, equality-only after separator + corporate-suffix stripping.
-    core("wescott") == core("wescott-co") -> fires. core("cairn-launch") != core("cairn")
+    core("acme") == core("acme-co") -> fires. core("cairn-launch") != core("cairn")
     -> does not fire; that takes the §8.1 child-hint path instead."""
     ct = _core(tag)
     if len(_norm("".join(ct))) < NAME_MIN:
@@ -501,7 +501,7 @@ def _classify_cluster(cid, members, ids, min_j, idx: _Index):
         S1.5a alias -> S1.5b existing-project children -> NAME GUARD -> S1.5c P3 -> Stage 2
 
     The name guard sits BEFORE promotion on purpose. An earlier revision tested positive
-    evidence first and promoted `wescott` and `cairn-launch` to standalone — precisely
+    evidence first and promoted `acme` and `cairn-launch` to standalone — precisely
     what §8.1/§8.2 forbid — so collision and unconfirmed-prefix evidence overrides P1/P2
     and P3 alike. The tests drive THIS function; there is no second implementation.
 

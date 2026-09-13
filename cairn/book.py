@@ -1,8 +1,8 @@
 """
 cairn/book.py — the Book. The project's founding idea, finally built.
 
-March 2026, node faa0e964f099: "Cairn = Index + TOC + Glossary = Logbook =
-Compass." The engine got built; the book got forgotten. This module is the
+The founding idea — Cairn = Index + TOC + Glossary = Logbook = Compass. The
+engine got built; the book got forgotten. This module is the
 book: a pointer-only navigation layer generated from organs that already
 exist — nothing here stores content, everything dereferences.
 
@@ -495,23 +495,227 @@ _INDEX_TAG_SKIP = ("kw:", "entity:", "prov:", "by:", "stance:", "account:",
                    "file:", "mtime:", "made:", "lesson:", "from:",
                    "media:", "room:", "ext:")
 
+# Bare, un-prefixed words that are retrieval plumbing or node-kinds — NOT topics —
+# plus the ALL-CAPS "CAIRN-..." session/collab markers (the real project topic is
+# lowercase "cairn", so case separates them cleanly). These pass the prefix skip
+# above (no colon) but still are not human topics, so they crowd the A–Z. We route
+# them to a reversible "system tags" list the Index can reveal on demand. This is a
+# DISPLAY classification only — DATA untouched, every tag stays clickable. 2026-09-10.
+_INDEX_SYSTEM_WORDS = frozenset({
+    "conversation", "conversation_turn", "claim", "agent", "mcp", "import",
+    "collab", "user", "context_stamp",
+    "decision", "insight", "warning", "idea", "question", "resolved",
+    "hypothesis", "procedure", "open_item",
+})
+# NB: bare "note"/"stamp" deliberately NOT reserved — they had zero uses and could be
+# real future human topics; only the explicit technical name context_stamp is held.
+
+
+# Machine-RELATION prefixes that leak into the topic A–Z (they carry a ':' but weren't
+# in _INDEX_TAG_SKIP). Routed to the reversible system drawer — NOT deleted, still
+# clickable. Deliberately EXCLUDES proj: (real projects) and distills: (owner-kept —
+# the prefix earns its place).
+_INDEX_SYSTEM_PREFIXES = ("annotates:", "preflight:", "parent:", "schema:")
+
+# Explicit, owner-reviewed agent/collaboration PROCESS tags (bookkeeping, statuses,
+# provenance) routed to the reversible drawer — they were too broad to serve as Index
+# headings ("used so much it doesn't help searching"). Owner-ruled 2026-09-11 on a
+# 12-entry sample. EXACT labels only — NO patterns (a digit-ending like R4/gate could be
+# a real subject). Real subjects deliberately EXCLUDED: agent-harness, agent-protocol,
+# agent-loop, receipt-contract, blinded-measurement. Reversible; raw tag stays clickable.
+_INDEX_PROCESS_TAGS = frozenset({
+    "agent-authored", "awaiting-codex", "built-awaiting-review", "a1-residue-sweep",
+    "handoff", "receipt", "codex-review", "gate-a",
+})
+
+
+def _is_index_system_tag(t: str) -> bool:
+    """True for un-prefixed plumbing/kind words, ALL-CAPS CAIRN-* session markers, and
+    the machine-relation prefixes above — kept OUT of the topic A–Z but surfaced in the
+    reversible system list. The marker arm requires isupper() so a mixed-case topic like
+    'CAIRN-Garden' is NOT redirected. Lowercase 'cairn' (the real topic), proj:, and
+    the owner-kept distills: are never caught."""
+    return (t.lower() in _INDEX_SYSTEM_WORDS
+            or t.lower() in _INDEX_PROCESS_TAGS
+            or (t.startswith("CAIRN-") and t.isupper())
+            or t.startswith(_INDEX_SYSTEM_PREFIXES))
+
+
+def _safe_index_key(name: str) -> str:
+    """Grouping key for spelling-variant folding: NFC + collapsed inner whitespace +
+    lower(). PRESERVES punctuation, word boundaries, accents, digits, suffixes — and
+    uses lower() (NOT casefold, which would equate ß/ss and other compatibility forms)
+    so ONLY ordinary case differences fold: 'FooBar'/'foobar' group, while
+    'Foo Bar'/'foobar.com'/'C++'/'Straße' vs 'Strasse' stay distinct."""
+    import unicodedata, re
+    s = unicodedata.normalize("NFC", name).strip()
+    s = re.sub(r"\s+", " ", s)
+    return s.lower()
+
+
+def _index_label(tag: str) -> str:
+    """Display label: strip the entity:/proj: prefix for reading. The FULL tag is
+    carried separately so the click always reaches the real stored membership."""
+    if tag.startswith("entity:"):
+        return tag[7:]
+    if tag.startswith("proj:"):
+        return tag[5:]
+    return tag
+
+
+def _index_namespace(tag: str) -> str:
+    """Which tag namespace a display entry lives in. Spelling folding happens ONLY
+    within a namespace — topic 'Foo', proj:'Foo' and entity:'Foo' are distinct entries
+    (different meanings), never auto-merged just because their labels match."""
+    if tag.startswith("entity:"):
+        return "entity"
+    if tag.startswith("proj:"):
+        return "proj"
+    return "topic"
+
+
+def _index_prefs_path(vault=None):
+    """Where THIS vault's Index preferences live — co-located with its cairn.db (from
+    vault.db_path) so two vaults under the same OS home keep separate choices. Falls
+    back to ~/.cairn/index_prefs.json for a vault without a db_path (the default vault)."""
+    from pathlib import Path as _P
+    try:
+        dbp = getattr(vault, "db_path", None)
+        if dbp:
+            return _P(dbp).parent / "index_prefs.json"
+    except Exception:
+        pass
+    return _P.home() / ".cairn" / "index_prefs.json"
+
+
+def _index_settings(vault=None):
+    """Owner Index preferences from the ACTIVE vault's index_prefs.json (a SEPARATE,
+    vault-scoped store — Index writes never contend with settings.json greeting/toured):
+      {"overrides": {full_raw_tag: 'keep'|'move'},   # placement that WINS over the classifier
+       "aliases":   {source_full_tag: canonical_full_tag}}  # owner 'same as' merges
+    Keyed to full raw tags so case/namespace never redirect them. ({}, {}) on any error."""
+    import json as _j
+    try:
+        pf = _index_prefs_path(vault)
+        if not pf.exists():
+            return {}, {}
+        d = _j.loads(pf.read_text(encoding="utf-8"))
+        if not isinstance(d, dict):
+            return {}, {}
+        ov = d.get("overrides") if isinstance(d.get("overrides"), dict) else {}
+        al = d.get("aliases") if isinstance(d.get("aliases"), dict) else {}
+        return ov, al
+    except Exception:
+        return {}, {}
+
+
+def _resolve_alias(tag, aliases):
+    """Follow the owner 'same as' chain to its root canonical. Cycle-safe: a cycle
+    resolves to its lexically-smallest member so every node in it groups together
+    instead of splitting. A->B->C therefore all land under C; A<->B both land under
+    the same representative."""
+    seen = []
+    cur = tag
+    while cur in aliases:
+        if cur in seen:
+            return min(seen)
+        seen.append(cur)
+        cur = aliases[cur]
+    return cur
+
+
+def _group_index(counter: dict, kind: str, aliases: dict = None, include=None) -> list:
+    """Fold n>=2 tags into display entries by _safe_index_key of their DISPLAY LABEL
+    (ordinary case/whitespace variants only). Canonical = the real member with the
+    most distinct-node support (ties lexical); NO invented casing. Each entry carries
+    the FULL stored `tag` for the click AND a stripped `label` for display; every
+    spelling likewise keeps its full tag + label + own count. Counts are per-spelling —
+    NEVER summed into a group total (a node can bear several spellings). Sorted by label.
+
+    aliases: owner 'same as' map {source_full_tag: canonical_full_tag}, resolved
+    transitively (chains) and cycle-safely. include: tags the owner explicitly involved
+    (keep override, or a merge source/target) so they are eligible even below n>=2.
+    Within an owner-merged group the resolved ROOT wins display; a pure auto spelling
+    group still uses most-support. Manual merges only — never inferred."""
+    aliases = aliases or {}
+    include = include or set()
+    targets = set(aliases.values())
+    elig = {t: n for t, n in counter.items() if n >= 2 or t in include}
+    groups: dict = {}
+    for t in elig:
+        root = _resolve_alias(t, aliases)
+        groups.setdefault((_index_namespace(root), _safe_index_key(_index_label(root))), []).append(t)
+    out = []
+    for members in groups.values():
+        owner_merged = any((m in aliases) or (m in targets) for m in members)
+        if owner_merged:
+            root = _resolve_alias(members[0], aliases)
+            members.sort(key=lambda m: (m != root, -elig.get(m, 0), m))
+        else:
+            members.sort(key=lambda m: (-elig.get(m, 0), m))
+        canon = members[0]
+        out.append({
+            "tag": canon, "label": _index_label(canon), "count": elig.get(canon, 0),
+            "kind": kind, "variants": len(members),
+            "spellings": ([{"tag": m, "label": _index_label(m), "count": elig.get(m, 0)}
+                           for m in members] if len(members) > 1 else None),
+        })
+    out.sort(key=lambda e: e["label"].lower())
+    return out
+
 
 def index_data(vault) -> dict:
     """The back-of-book Index: topics, tags, doc cards, defined terms — A to Z."""
     c = vault.conn
     counts: dict = {}
+    ent_counts: dict = {}
     for r in c.execute(
             "SELECT tags FROM nodes WHERE status='active' "
             "AND tags IS NOT NULL AND tags != '[]'"):
         try:
-            for t in json.loads(r["tags"]):
-                if isinstance(t, str) and not t.startswith(_INDEX_TAG_SKIP):
-                    counts[t] = counts.get(t, 0) + 1
+            arr = json.loads(r["tags"])
         except Exception:
             continue
-    tags = [{"tag": t, "count": n} for t, n in
-            sorted(counts.items(), key=lambda kv: kv[0].lower())
-            if n >= 2][:1000]
+        if not isinstance(arr, list):
+            continue
+        # DISTINCT-NODE support: a tag counts ONCE per node even if repeated in the row.
+        for t in {x for x in arr if isinstance(x, str)}:
+            if t.startswith("entity:"):          # named things -> the Names layer
+                if t[7:]:
+                    ent_counts[t] = ent_counts.get(t, 0) + 1   # keep the FULL tag
+            elif not t.startswith(_INDEX_TAG_SKIP):
+                counts[t] = counts.get(t, 0) + 1
+    # Machinery/session markers -> reversible drawer (see _is_index_system_tag). Real
+    # topics and entity NAMES are each folded on exact spelling variants (_group_index)
+    # so a mixed-case tag is ONE entry, not 4 casings. `names` is a separate list the Index
+    # interleaves behind a toggle; every original spelling stays clickable via its full tag.
+    overrides, aliases = _index_settings(vault)
+    move_set = {t for t, v in overrides.items() if v == "move"}
+    keep_set = {t for t, v in overrides.items() if v == "keep"}
+    involved = set(aliases.keys()) | set(aliases.values())
+    def _to_system(tag):
+        ov = overrides.get(tag)
+        if ov == "move":
+            return True          # owner tucked it away
+        if ov == "keep":
+            return False         # owner pinned it to the A-Z
+        return _is_index_system_tag(tag)   # default classifier
+    # An explicit keep, or any tag the owner merged, is eligible even below n>=2 — the
+    # owner asked for it, so it must actually appear (not vanish under the noise gate).
+    include = keep_set | involved
+    topic_counts = {t: n for t, n in counts.items() if not _to_system(t)}
+    name_counts = {t: n for t, n in ent_counts.items() if not _to_system(t)}
+    tags = _group_index(topic_counts, "topic", aliases, include)
+    names = _group_index(name_counts, "name", aliases, include)
+    # drawer = everything routed to system (machinery + any owner-moved topic/name). Shown
+    # at n>=2, OR when the owner explicitly moved it (so an accepted move is never dropped).
+    sys_src = {t: n for t, n in counts.items() if _to_system(t)}
+    for t, n in ent_counts.items():
+        if _to_system(t):
+            sys_src[t] = n
+    system_tags = [{"tag": t, "count": n}
+                   for t, n in sorted(sys_src.items(), key=lambda kv: kv[0].lower())
+                   if n >= 2 or t in move_set]
 
     docs = []
     for r in c.execute(
@@ -537,8 +741,8 @@ def index_data(vault) -> dict:
     # Consolidated knowledge — the neocortex layer folded in from the old Topic-
     # hubs page (plan C4: kill the duplicate, keep its one unique section). These
     # insight/procedure nodes each absorbed several episodes during sleep.
-    # The owner asked "is there not more than that?" — there was (92 vs the old
-    # LIMIT 20): show the full layer, and carry the total so the header can say so.
+    # The full layer is larger than the old LIMIT 20 (e.g. 92 vs 20): show all of
+    # it, and carry the total so the header can say so.
     import re as _re_con
     _con_re = _re_con.compile(r"\[consolidated x(\d+)[^\]]*\]\s*")
     consolidated = []
@@ -563,7 +767,9 @@ def index_data(vault) -> dict:
         consolidated.append({"id": r["id"], "kind": r["kind"],
                              "gist": g, "ts": r["timestamp"]})
 
-    return {"tags": tags, "docs": docs, "terms": terms,
+    return {"tags": tags, "names": names, "system_tags": system_tags,
+            "index_overrides": overrides, "index_aliases": aliases,
+            "docs": docs, "terms": terms,
             "topics": topics_data(vault), "consolidated": consolidated,
             "consolidated_total": consolidated_total}
 

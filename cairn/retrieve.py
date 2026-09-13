@@ -219,6 +219,21 @@ def _origin_label(acct, harn):
     return "/".join(p for p in (acct, harn) if p)
 
 
+# The ranking engine (vault.query_episodic) scores each hit as a weighted blend
+# of these four raw signals. Carrying them through makes a top result explainable
+# — "recent + keyword" vs "genuinely similar" — instead of a bare opaque number.
+_COMPONENT_KEYS = ("score_cosine", "score_recency", "score_keyword", "score_import")
+
+
+def _components(d: dict):
+    """Copy the per-hit ranking components that are ACTUALLY present, at full
+    precision. Missing stays missing (the keyword fallback emits none; legacy
+    packs have none) — we never default to 0, so a real 0.0 is distinguishable
+    from 'not measured'. Returns None when the hit carries no components."""
+    c = {k: d[k] for k in _COMPONENT_KEYS if isinstance(d.get(k), (int, float))}
+    return c or None
+
+
 def fetch_pack(
     query: str,
     vault: Optional[Vault] = None,
@@ -226,6 +241,7 @@ def fetch_pack(
     k: int = 20,
     channel: str = "fetch",
     account: Optional[str] = None,
+    session: Optional[str] = None,
 ) -> dict:
     """
     THE token-saving retrieval: one query → only what matters, fitted to a
@@ -278,6 +294,14 @@ def fetch_pack(
             "gist":   gist,
             "text":   verbatim,     # "" when only the gist fit the budget
             "score":  round(d.get("score", 0), 3),
+            # WHY this ranked — the ranking engine's own components, carried
+            # through (query_episodic already computes them) so a prominent hit
+            # can be seen for what it is, not mistaken for confidence/truth.
+            # Only present when the ranker emitted them: the keyword fallback and
+            # legacy packs won't, and we never invent a value. Full precision
+            # kept here; render rounds. Never attached to graph-linked hits below
+            # (those come from edges, not the cosine ranking — no components).
+            "components": _components(d),
             "origin": _origin_label(acct, harn),
         })
 
@@ -303,7 +327,11 @@ def fetch_pack(
     # attention-ledger receipts: a pulled memory was SHOWN, same as a pushed
     # one — the scheduler needs the complete attention history either way
     shown = [r["id"] for r in pack if r["id"]] + [l["id"] for l in linked]
-    v.record_shown(shown, channel=channel, session=_current_session(),
+    # Receipt is credited to the CALLER's identity when given (the MCP server
+    # passes the honest per-connection session), NOT the ambient last_session.txt
+    # — otherwise a non-Claude client's retrieval was filed under whatever Claude
+    # session happened to be open. Falls back to the ambient id for CLI/back-compat.
+    v.record_shown(shown, channel=channel, session=(session or _current_session()),
                    trigger=query[:80])
 
     # annotate-only relations: decoration on the frozen ranking, never
@@ -325,6 +353,7 @@ def drift_pack(
     vault: Optional[Vault] = None,
     hops: int = 3,
     k: int = 10,
+    session: Optional[str] = None,
 ) -> dict:
     """
     The creative complement to fetch_pack. fetch answers "what's relevant?" —
@@ -389,9 +418,17 @@ def drift_pack(
                           for s in seeds[:3]]}
 
     qmarks = ",".join("?" * len(ranked))
+    # Resolve ALL ranked neighbors regardless of status. A voided node isn't
+    # dead — it was once recorded, may since have been corrected or was a
+    # misunderstanding — and it's still a real connection worth surfacing. We
+    # filtered on status='active' here before, which meant a void node in the
+    # top-k silently vanished and could leave an active neighbor unreturned.
+    # Now every present neighbor comes back, carrying its status so the surface
+    # can label the historical ones (only a truly absent row — no body — is
+    # skipped). The walk itself is unchanged.
     rows = {r["id"]: r for r in v.conn.execute(
-        f"SELECT id, kind, session, gist, query, community FROM nodes "
-        f"WHERE id IN ({qmarks}) AND status='active'",
+        f"SELECT id, kind, status, session, gist, query, community FROM nodes "
+        f"WHERE id IN ({qmarks})",
         [nid for nid, _ in ranked])}
 
     origin_cache: dict = {}
@@ -404,6 +441,7 @@ def drift_pack(
         results.append({
             "id":      nid,
             "kind":    r["kind"],
+            "status":  r["status"],
             "source":  (r["session"] or "")[:40],
             "gist":    r["gist"] or (r["query"] or "")[:90],
             "topic":   (r["community"] or "").partition("|")[2],
@@ -413,7 +451,7 @@ def drift_pack(
         })
 
     v.record_shown([r["id"] for r in results], channel="drift",
-                   session=_current_session(), trigger=query[:80])
+                   session=(session or _current_session()), trigger=query[:80])
 
     try:
         ann = v.relation_annotations([r["id"] for r in results])
@@ -445,12 +483,28 @@ def render_drift(pack: dict) -> str:
     for r in pack["results"]:
         topic = f" [{r['topic']}]" if r["topic"] else ""
         tag = f"  · {r['origin']}" if r.get("origin") else ""
-        lines.append(f"~ [{r['kind']}]{topic} {r['gist']}")
+        retired = r.get("status") and r["status"] != "active"
+        mark = " ⟲ retired" if retired else ""
+        lines.append(f"~ [{r['kind']}]{mark}{topic} {r['gist']}")
         lines.append(f"    {r['hops']} hop(s) out, wander score {r['score']} "
                      f"(id {r['id']}){tag}")
+        if retired:
+            lines.append(f"    ⚠ status={r['status']} — a past connection that "
+                         f"may no longer hold (kept as history, not deleted).")
         if r.get("relation"):
             lines.append(f"    {r['relation']}")
     return "\n".join(lines)
+
+
+def _raw_components(comp: dict) -> str:
+    """Compact display of the raw (UNWEIGHTED) ranking signals, rounded for the
+    eye only. '' when none were measured. Never claims they sum to the rank."""
+    if not comp:
+        return ""
+    order = (("sim", "score_cosine"), ("rec", "score_recency"),
+             ("kw", "score_keyword"), ("imp", "score_import"))
+    parts = [f"{lbl} {comp[key]:.2f}" for lbl, key in order if key in comp]
+    return ("; raw: " + ", ".join(parts)) if parts else ""
 
 
 def render_pack(pack: dict) -> str:
@@ -459,11 +513,19 @@ def render_pack(pack: dict) -> str:
         f'# cairn fetch: "{pack["query"]}"',
         f"# {pack['count']} results, ~{pack['tokens_est']} tokens "
         f"(instead of re-reading sources wholesale)",
-        "",
     ]
+    # One legend per pack — only when some hit actually carries components, so a
+    # keyword-fallback pack stays quiet. Rank is a RETRIEVAL ORDER, not truth.
+    if any(r.get("components") for r in pack["results"]):
+        lines.append(
+            "# rank = weighted retrieval score, NOT confidence — sim=cosine "
+            "similarity · rec=creation recency · kw=keyword coverage · "
+            "imp=importance prior (raw values are unweighted)")
+    lines.append("")
     for r in pack["results"]:
         tag = f"  · {r['origin']}" if r.get("origin") else ""
-        lines.append(f"## [{r['kind']}] {r['source']}  (score {r['score']}){tag}")
+        lines.append(f"## [{r['kind']}] {r['source']}  "
+                     f"(rank {r['score']}{_raw_components(r.get('components'))}){tag}")
         if r.get("relation"):
             lines.append(f"  {r['relation']}")
         if r["text"]:
