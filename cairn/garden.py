@@ -31,8 +31,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Module-level so PEP-563 string annotations resolve in __globals__ —
-# FastAPI needs to see the real Request class, not the string "Request".
+# Just keep postponed annotations resolvable in module globals.
+# Web handlers need the actual Request class when FastAPI is present.
+# Missing optional web dependencies leave a harmless type placeholder.
+# Importing this module does not require starting the dashboard.
 try:
     from fastapi import Request
 except ImportError:          # garden only registers when fastapi exists
@@ -6338,4 +6340,3 @@ setInterval(async () => {
 </script>
 </body>
 </html>"""
-# origin: e43da176-f5b2-59aa-a5e3-9fb8abb1d9e1

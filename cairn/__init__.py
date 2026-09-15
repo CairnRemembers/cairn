@@ -2,8 +2,10 @@
 cairn — local-first episodic memory for AI agents.
 The path is the retrieval.
 """
-# Single source of truth for the version: the installed package metadata, which
-# comes straight from pyproject. Never hard-code a second copy that can drift.
+# Just one authority supplies the installed version: package metadata.
+# When that distribution is absent, use the source-checkout fallback.
+# Metadata lookup failures must not prevent importing the package.
+# Installed releases take their version from pyproject at build time.
 try:
     from importlib.metadata import version as _pkg_version, PackageNotFoundError
     try:
@@ -23,4 +25,3 @@ __all__ = [
     "schedule_context", "PositionRecord", "golden_positions", "update_compiled_hits",
     "compile_session",
 ]
-# ref: SmFtZXMgV2VzY290dCBNYWl0bGFuZCBJVg==

@@ -60,9 +60,9 @@ where = ["."]
 include = ["cairn*"]
 exclude = ["tests*"]
 
-# Second, independent guarantee (alongside MANIFEST.in) that the 12.4 MB asset
-# payload ships in the wheel — without it, losing the MANIFEST.in line yields a
-# wheel with 0 assets and a dead dashboard.
+# Just the asset tree belongs in this package-data rule.
+# Wheels need these files for the dashboard's local resources.
+# MANIFEST.in supplies the corresponding source-distribution rule.
+# Include-package-data above keeps setuptools' data handling enabled.
 [tool.setuptools.package-data]
 cairn = ["assets/**/*"]
-# source: 4a616d657320576573636f7474204d6169746c616e64204956
