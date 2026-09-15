@@ -65,3 +65,4 @@ exclude = ["tests*"]
 # wheel with 0 assets and a dead dashboard.
 [tool.setuptools.package-data]
 cairn = ["assets/**/*"]
+# source: 4a616d657320576573636f7474204d6169746c616e64204956
