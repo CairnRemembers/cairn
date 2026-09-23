@@ -27,6 +27,31 @@ can find again, across sessions and across model generations.
 
 ---
 
+## See inside Cairn
+
+Keep the decisions, reasons and unfinished work you want to return to. Cairn stores them in a local vault that you and your connected AI tools can read and add to. Each AI keeps its own memory and context. These demos show the optional dashboard for exploring the record.
+
+<table>
+<tr><th>Hub</th><th>Projects</th><th>Connections</th></tr>
+<tr>
+<td width="33%"><a href="docs/inside-cairn/clips/hub.mp4"><img src="docs/inside-cairn/posters/hub.jpg" alt="Cairn Hub preview" width="300"></a></td>
+<td width="33%"><a href="docs/inside-cairn/clips/projects.mp4"><img src="docs/inside-cairn/posters/projects.jpg" alt="Cairn Projects preview" width="300"></a></td>
+<td width="33%"><a href="docs/inside-cairn/clips/connections.mp4"><img src="docs/inside-cairn/posters/connections.jpg" alt="Cairn Connections preview" width="300"></a></td>
+</tr>
+<tr><td>Pick up unfinished work.</td><td>Keep related work together.</td><td>Explore linked memories.</td></tr>
+</table>
+
+[Explore all five demos and descriptions](docs/inside-cairn/README.md).
+
+- [Hub — 9 seconds](docs/inside-cairn/clips/hub.mp4)
+- [Projects — 18 seconds](docs/inside-cairn/clips/projects.mp4)
+- [Index — 6 seconds](docs/inside-cairn/clips/index.mp4)
+- [Live Feed — 14 seconds](docs/inside-cairn/clips/live-feed.mp4)
+- [Connections — 8 seconds](docs/inside-cairn/clips/connections.mp4)
+
+Recorded in a local installation. Private text uses examples; controls and source attribution are retained. The filmed installation has not been verified against every control in release 0.3.3. [Demo descriptions and recording notes](docs/inside-cairn/README.md).
+---
+
 ## Contents
 - [Quick start](#quick-start)
 - [Wire up your AI](#wire-up-your-ai)
