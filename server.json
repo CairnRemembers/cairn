@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.CairnRemembers/cairn-remembers",
+  "title": "Cairn Remembers",
+  "description": "Local memory your AI tools share: decisions, notes and corrections that carry across sessions.",
+  "repository": {
+    "url": "https://github.com/CairnRemembers/cairn",
+    "source": "github"
+  },
+  "version": "0.3.4",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "cairn-remembers",
+      "version": "0.3.4",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}

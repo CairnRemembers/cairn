@@ -71,6 +71,34 @@ def _sse_start_ts(conn):
         return None
 
 
+def _feed_query_preview(row) -> str:
+    """Show a user's request after Codex's automatic browser context in the feed.
+
+    This only changes the short feed label. The stored query, preview, and full
+    conversation text remain untouched and available in node detail/retrieval.
+    """
+    query = row["query"] or ""
+    if row["kind"] == "conversation_turn" and row["speaker"] == "user":
+        opening = '<in-app-browser-context source="ambient-ui-state">'
+        closing = "</in-app-browser-context>"
+        label = "## My request:"
+        # query is capped by capture, so a long browser context can put the
+        # request only in output_preview or the full episodic text.
+        for text in (query, row["output_preview"] or "", row["episodic_text"] or ""):
+            start = text.find(opening)
+            if start < 0:
+                continue
+            end = text.find(closing, start + len(opening))
+            if end < 0:
+                continue
+            request_at = text.find(label, end + len(closing))
+            if request_at >= 0:
+                request = text[request_at + len(label):].strip()
+                if request:
+                    return request[:80]
+    return query[:80]
+
+
 def run_dashboard(port: int = 7331, session_id: str | None = None,
                   open_browser: bool = True):
     try:
@@ -973,7 +1001,7 @@ def run_dashboard(port: int = 7331, session_id: str | None = None,
                         "kind":     row["kind"],
                         "tool":     row["tool"],
                         "model":    row["model"] or "unknown",
-                        "query":    (row["query"] or "")[:80],
+                        "query":    _feed_query_preview(row),
                         "status":   row["status"],
                         "flagged":  bool(row["flagged"]),
                         "latency":  row["latency_ms"],
@@ -1045,7 +1073,7 @@ def run_dashboard(port: int = 7331, session_id: str | None = None,
             (n,)).fetchall()
         out = [{
             "id": r["id"], "kind": r["kind"], "tool": r["tool"],
-            "model": r["model"] or "unknown", "query": (r["query"] or "")[:80],
+            "model": r["model"] or "unknown", "query": _feed_query_preview(r),
             "status": r["status"], "flagged": bool(r["flagged"]),
             "latency": r["latency_ms"], "results": r["result_count"],
             "tokens_out": r["tokens_out"], "tokens_cache_read": r["tokens_cache_read"],

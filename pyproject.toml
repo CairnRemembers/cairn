@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cairn-remembers"
-version = "0.3.3"
+version = "0.3.4"
 description = "Local-first, sovereign memory for AI agents — your memory, across any model."
 readme = "README.md"
 license = "BUSL-1.1"
@@ -51,6 +51,7 @@ all = ["cairn-remembers[embeddings,dashboard]"]
 
 [project.scripts]
 cairn = "cairn.__main__:main"
+cairn-remembers = "cairn.__main__:main"
 
 [tool.setuptools]
 include-package-data = true

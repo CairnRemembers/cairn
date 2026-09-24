@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -16,8 +17,10 @@ from cairn import book
 from cairn.vault import Vault
 
 
-def _seed(v, account, project, n, when="2026-07-08T12:00:00+00:00"):
+def _seed(v, account, project, n, when=None):
     """n active nodes tagged <project>, under a session owned by <account>."""
+    if when is None:
+        when = datetime.now(timezone.utc).isoformat()
     sess = f"s-{account}-{project}"
     v.conn.execute(
         "INSERT OR IGNORE INTO sessions (id, started_at, account, account_locked) "

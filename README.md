@@ -1,5 +1,7 @@
 # Cairn
 
+<!-- mcp-name: io.github.CairnRemembers/cairn-remembers -->
+
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](https://github.com/CairnRemembers/cairn/blob/v0.3.3/LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 ![PyPI](https://img.shields.io/pypi/v/cairn-remembers)
